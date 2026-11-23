@@ -6,6 +6,10 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 
 ## [Unreleased]
 
+### Added
+
+- **Usage now includes linked hosts.** Settings → Usage counts the tokens and cost of sessions on every linked host, not only this machine. Each host's daemon reads its own transcripts and the web server keeps a copy, so a host that goes offline keeps its last numbers. A new **Host** breakdown shows each machine's share and when an offline host last synced, and project rows name their host. A host that is still syncing fills in on its own. Refresh reads every host's sessions again, priced with that host's `models.yml`. A host on an older ompweb is listed as needing an update.
+
 ### Fixed
 
 - **Keep session tabs and the complete composer inside the chat viewport.** The chat now shares the remaining height with its tab strip instead of adding another full-height child, and the outer container clips programmatic scrolling so scroll following and input focus cannot move tabs offscreen or hide model and send controls.
@@ -13,6 +17,7 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 - **Name browser outbox storage failures.** IndexedDB open, read and write failures now preserve the originating exception name and message in the send error, making quota, schema, permission and payload failures distinguishable without exposing message contents.
 - **Keep Extensions & Tools navigation and plugin saves visible.** Skills and plugin detail panels retain the shared section header and Skills/Plugins navigation, horizontal settings tabs bring the active item into view, and the plugin Save action uses a fixed, accent-styled operation bar outside nested scroll containers instead of an unstyled button below the form.
 - **Horizontal scrollbars no longer clip file-panel tabs.** The tab row keeps its full height in narrow panels, including on mobile.
+- **Refreshing Usage applies changed prices, and says when it fails.** Prices edited in `models.yml` now apply to existing sessions on refresh; they used to keep the old prices until the web server restarted. A refresh that fails now shows the error above the last report instead of leaving it up without a word.
 - **Show the generation-speed pill in the top bar again.** Since the header opener was split from the file-panel close control, the pill's box sized to zero width and its narrow-header rule hid it on every screen; it now keeps its width. Phone-width screens still hide it.
 
 ### Added
