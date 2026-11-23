@@ -85,7 +85,7 @@ test("schema renders every scalar type, validates/saves typed values, and preser
   const saveButton = screen.getByRole("button", { name: "Save settings" });
   assert.equal(saveButton.style.background, "var(--accent-strong)");
   assert.equal(saveButton.style.color, "var(--on-accent)");
-  assert.equal(saveButton.parentElement?.style.position, "sticky");
+  assert.equal(saveButton.parentElement?.style.position, "fixed");
   assert.ok(Number.parseInt(saveButton.style.minHeight, 10) >= 36);
 
   await user.clear(name);

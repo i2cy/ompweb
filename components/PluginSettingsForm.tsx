@@ -25,15 +25,19 @@ type DraftValue = string | boolean;
 type Drafts = Record<string, DraftValue>;
 
 const settingsActionBarStyle: React.CSSProperties = {
-  position: "sticky",
-  top: 0,
-  zIndex: 4,
+  position: "fixed",
+  right: 16,
+  bottom: 72,
+  zIndex: 30,
   display: "flex",
   gap: 8,
   flexWrap: "wrap",
-  padding: "10px 0 12px",
-  background: "var(--bg)",
-  borderBottom: "1px solid var(--border)",
+  maxWidth: "calc(100vw - 32px)",
+  padding: 10,
+  background: "var(--bg-panel)",
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  boxShadow: "0 6px 28px rgb(0 0 0 / 45%)",
 };
 const primaryActionStyle: React.CSSProperties = {
   minHeight: 36,
@@ -315,7 +319,7 @@ export function PluginSettingsForm({ pkg, cwd }: { pkg: PluginPackageInfo; cwd: 
 
   const disabled = busy !== null;
   return (
-    <section aria-label={t("pluginsConfig.configuration")} style={{ display: "flex", flexDirection: "column", gap: 16, borderTop: "1px solid var(--border)", paddingTop: 18 }}>
+    <section aria-label={t("pluginsConfig.configuration")} style={{ display: "flex", flexDirection: "column", gap: 16, borderTop: "1px solid var(--border)", paddingTop: 18, paddingBottom: 84 }}>
       <div>
         <h3 style={{ margin: 0, fontSize: 13, color: "var(--text)" }}>{t("pluginsConfig.configuration")}</h3>
         <p style={{ margin: "4px 0 0", fontSize: 11, lineHeight: 1.5, color: "var(--text-dim)" }}>{t("pluginsConfig.configurationHelp")}</p>
