@@ -88,6 +88,17 @@ export function getConfigAgentRoots(): string[] {
  */
 const OMP_ENV_NAME = /^\.env(?:\.|$)/i;
 const OMP_SECRET_NAME = /^(?:\.?agent\.db(?:[-.~].*)?|\.?models\.(?:yml|yaml|json)(?:[.~].*|-(?:backup|bak|old)(?:[.~-].*)?)?|\.env(?:\..*)?)$/i;
+/** omp-web's own auth material (#295): the session-signing key
+ * (`web-auth-secret.json`), the daemon bearer token (`host.json`), the VAPID
+ * private key's database (`notifications.db`, SQLite sidecars included) and
+ * the password hash (`web-service.env`). They live one level below the
+ * directories the loop below scans — `<agentDir>/omp-web/`, with
+ * `web-service.env` directly in the agent dir — so they need their own
+ * scoped check. Deliberately NOT a blanket ".db under a config root" rule:
+ * an unrelated database under a config root stays readable (#394), and the
+ * deliberately viewable omp-web files (`hosts.json`,
+ * `transport-metrics.jsonl`, ...) keep their names out of this list. */
+const OMP_WEB_SECRET_NAME = /^(?:web-auth-secret\.json|host\.json|notifications\.db|web-service\.env)(?:[-.~].*)?$/i;
 const credentialPolicyUnavailable = () => new HostOpError(503, "credential_policy_unavailable", "Credential exclusions cannot be verified while their filesystem metadata is unreadable");
 
 /** Request metadata failures retain a 404; incomplete credential ownership metadata throws a 503. */
@@ -106,6 +117,23 @@ export function isOmpSecretFile(filePath: string): boolean {
   const agentDirs = [getAgentDir(), ...configDirs.map((dir) => path.join(dir, "agent"))];
   const requestedIdentity = fileIdentity(filePath, markRequestUnavailable);
   const identity = requestedIdentity && requestedIdentity.nlink > 1 && requestedIdentity.ino > 0 ? requestedIdentity : null;
+  if (OMP_WEB_SECRET_NAME.test(name)) {
+    const parent = comparablePath(path.dirname(requested));
+    if (name.toLowerCase().startsWith("web-service.env")) {
+      // web-service.env lives directly in the agent dir (bin/service-env.js:
+      // PI_CODING_AGENT_DIR, else ~/.omp/agent) — never in a workspace.
+      for (const dir of new Set([...agentDirs, ...configDirs])) {
+        if (parent === comparablePath(resolvedOrSelf(dir, markUnavailable))) return true;
+      }
+    } else {
+      // The signing key, the daemon token and the notification store live in
+      // <agentDir>/omp-web/ (lib/web-auth-secret.ts, lib/hosts/host-login.ts,
+      // lib/notification-store.ts), including profile agent dirs.
+      for (const dir of agentDirs) {
+        if (parent === comparablePath(resolvedOrSelf(path.join(dir, "omp-web"), markUnavailable))) return true;
+      }
+    }
+  }
   for (const dir of new Set([...agentDirs, ...configDirs])) {
     const agentDir = agentDirs.includes(dir);
     const namePattern = agentDir ? OMP_SECRET_NAME : OMP_ENV_NAME;

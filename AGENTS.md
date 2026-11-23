@@ -117,13 +117,13 @@ app/
 app/api/
   sessions/route.ts               GET  list all sessions
   sessions/search/route.ts        GET ?q= — NDJSON { scores } batches (titles + transcripts); closing the request stops the scan
-  sessions/[id]/route.ts          GET/PATCH/DELETE session
-  sessions/[id]/context/route.ts  GET ?leafId= — context for a specific leaf
+  sessions/[id]/route.ts          GET/PATCH/DELETE session; GET ?meta=1 answers the navigation shape (tree + leaf, no transcript), ?includeState=alive the split liveness shape (`running` = a turn in flight, `alive` = the child exists; every other `includeState` value keeps the historical `running` = live-wrapper meaning)
+  sessions/[id]/context/route.ts  GET ?leafId= — context for a specific leaf; answers a strong ETag for the exact bytes and 304 on a matching If-None-Match
   sessions/[id]/matches/route.ts  GET ?q=&limit= — best `limit` search hits in the active conversation (best match, then newest); Load more asks for a longer prefix
   sessions/[id]/export/route.ts   GET exported HTML for a session
   sessions/[id]/local-file/route.ts GET ?uri=local://<file> → `{ path, sessionId }`: the absolute path of a file in the session's own local:// directory, resolved on the owning host's daemon, and the canonical session that owns it (a live alias resolves to its current id; the tab must store that, since the alias goes with its wrapper). The open_file host tool then reads it through /api/files with that `sessionId`; 400 `invalid_local_uri` / `not_a_file`, 404 `session_not_found` / `file_not_found`, 403 on a symlink out, 501 `workspace_unsupported` for a host daemon that predates `resolveLocalFile`
   agent/new/route.ts              POST { cwd, message, toolNames?, provider?, modelId? }
-  agent/[id]/route.ts             GET state | POST any channel command
+  agent/[id]/route.ts             GET state (?systemPrompt=0 drops the ~13 KB prompt from the poll) | POST any channel command
   events/route.ts                 GET multiplexed SSE | POST subscribe/unsubscribe channels
   events/link/route.ts            GET WebSocket upgrade: the browser link (lib/browser-link.ts), bound to the request's web session; gated like every API route, 426 without an upgrade
   transport-metrics/route.ts      GET { now } (the SSE clock probe) | POST { samples } → <agent dir>/omp-web/transport-metrics.jsonl
@@ -134,6 +134,7 @@ app/api/
   hosts/cluster-config/file/[hash]/route.ts GET one file of the current manifest by its sha256 (404 for any other hash, an older version's included); same admission and gate as the manifest
   hosts/[id]/cluster/route.ts     PUT { projectsRoot } join the cluster (the host's Git projects bind to cluster projects by repository, `gitOrigins`; this machine is added too by any join while it is not a member; the host needs link protocol 10; 409 `host_in_other_cluster` when it holds another server's configuration), then sends the host its configuration (`clusterConfigOp` `apply`) | DELETE leave, then `restore` (none to a daemon below protocol 10, which never applied one); the body carries `restoreError` when the host could not put its own configuration back; 409 `{ error, code }` for offline/old daemon/`cluster_changed`, 503 if `pools.json` is unreadable
   notifications/devices/route.ts  GET VAPID key + subscribed | PUT { deviceId, prefs, subscription? }
+  notifications/answer/route.ts   POST { sessionId, requestId, response } answer a pending dialog from a notification (never spawns omp)
   notifications/presence/route.ts POST { clientId, deviceId, visible, sessionId, seq }
   notifications/test/route.ts     POST { deviceId } send a test push (502 on push-service refusal)
   notifications/history/route.ts  GET entries | PATCH { ids } mark read | DELETE ?id= remove one, ?all=1 clear
@@ -409,6 +410,7 @@ The table is static imports, not a runtime glob, so `bun build --compile` (`scri
   The daemon owns lifecycle, streaming snapshots and first-answer dialog settlement.
   Web callbacks choose the last-active eligible server and are not blindly retried.
   `channels_changed` discovers background runs; `sessions_changed` invalidates lists;
+  `omp_version` reports omp found after a hello that said none (the daemon retries the runner fetch and the read, 30 s doubling to 5 min);
   one link is the automatic notification publisher.
   Cross-server fences live in the daemon: a history edit takes the acknowledged
   `editLease` op before preflight, and a `peer_message_command` marker makes another server's identical echo
@@ -1141,6 +1143,36 @@ end to end:
   dropped or reordered. Merged frames keep the latest frame's sequence and emit
   time and carry `web.first`, their first piece's sequence. Deltas of different
   blocks never merge past each other: that would break the sequence order.
+- Tool snapshots (`event-stream-hub.ts`, session channel): omp sends the whole
+  accumulated output on every `tool_execution_update`, so the newest snapshot per
+  `toolCallId` is held **outside** the ordered message queue and written at most
+  once per `TOOL_UPDATE_FRAME_MIN_INTERVAL_MS` of that tool. A tool frame needs
+  no position among the deltas: the browser fences it by `max(lifecycleSequence,
+  toolsSnapshotSequence, toolSequences.get(tool))` and never by
+  `messageSequence` (`hooks/useAgentSession-sync.ts`). Three consequences, all
+  required: a message delta neither waits for a held snapshot nor releases one
+  (otherwise a bash tool printing during a streaming turn got one snapshot per
+  delta, i.e. no cap at all); a tool that has never been written has no window,
+  so its first snapshot is never delayed behind another tool's hold; and the
+  ordering guarantee is per domain, not globally by `web.sequence`. Message
+  deltas stay ordered and lossless among themselves, each tool's own frames stay
+  monotonic, and a boundary frame follows the frames emitted before it. Across
+  domains an older sequence may arrive later: another tool's newly written
+  snapshot can carry a lower sequence than a held one, and message@3 can precede
+  tool@2. That is safe because the consumer keeps separate floors; it is not a
+  replay or reordering defect. Where several held snapshots become releasable
+  together they are written in their own emission order.
+  The "at most once per second" holds only between consecutive
+  `tool_execution_update` frames of the same tool. Every other session frame —
+  the same or another tool's `tool_execution_start`/`end`, `btw_delta`,
+  `message_end`, … — is a boundary that merges every held snapshot into the
+  queue ahead of itself in emission order; the forced drain then writes the whole
+  queue regardless of backpressure, so the boundary never overtakes the output it
+  ends. A burst of boundary frames therefore releases snapshots at the
+  pre-throttle rate, bounded by how many boundary frames arrive; no snapshot is
+  dropped or reordered. The throttle is not an unconditional one-per-second cap.
+  A written snapshot is stamped with its write time, not the emit time: the
+  deliberate hold must not appear as network latency in Connection diagnostics.
 - Browser (`lib/message-update-coalescer.ts`): applies each delta on arrival and
   dispatches the whole message at display rate, so `useAgentSession` only ever
   sees whole messages. A delta with no base is held and triggers a catch-up; the
@@ -1409,6 +1441,21 @@ during the wait.
   CLOSED = fatal (e.g. 409 for a wrapper-less session; the chat hook then
   retries with backoff). Dead tabs are detected with a lifetime Web Lock —
   MessagePort has no close event.
+- **Native-client handshake and keep-alive.** `GET /api/app-info` (behind the
+  normal `/api` auth gate) answers `{ name, version, api: 1, capabilities }`
+  with `Cache-Control: no-store`: package identity and which server-side
+  features exist, never a credential or configuration value. A capability is
+  added only together with its implementation, so a client may branch on it
+  instead of probing for 404s. Today it carries `heartbeatParam`.
+  `GET /api/events?heartbeat=<seconds>` sets that one connection's keep-alive
+  (an idle stream gets a `:` comment frame): an integer in 15..110, otherwise
+  the 30 s default — out-of-range values fall back to the default, they are
+  not clamped to the nearest bound. The interval is per connection; other
+  connections and the browser link's own 15 s ping are unchanged. A value
+  above the reverse proxy's read timeout (nginx defaults to 60 s) disconnects
+  an idle stream before its first keep-alive, so a client selecting 110 s
+  needs a proxy read timeout above 110 s (see the README's reverse-proxy
+  section); the 30 s default needs one above 30 s.
 - Channels (`lib/event-stream-hub.ts`): `running` (sidebar badges +
   session-list hints), `notifications` (one tab's toasts and in-page system
   notifications, keyed by its `clientId`), `hosts` (the `GET /api/hosts` body on
@@ -1511,6 +1558,7 @@ during the wait.
 
 ### Running state + reconciliation
 - The sidebar subscribes to the `running` channel, backed by `subscribeRunningSessions()` in `lib/rpc-manager.ts`, so running badges update without polling.
+- `runningSessions` entries carry `awaitingInput` while the wrapper's `pendingUiRequests` is non-empty. Every removal broadcasts a running change (`forgetPendingUiRequest` per dialog, `clearPendingUiRequests` for reload/destroy), so a new path that drops dialogs must go through one of them or the sidebar keeps the mark.
 - An open chat subscribes to `running` too: when its session shows up there while the chat has no `session` stream (the run started after the chat loaded: another tab or device, or a send from a chat instance the user switched away from), it reads `GET /api/agent/[id]` and attaches exactly as on load (`attachLiveRun`). Without it the chat stayed idle beside a running badge until a reload.
   - The lookup waits for the chat's own work: its mount load while in flight (a stream attached before that load lands would make its `agent_start` drop the load), a stream of its own still connecting (its readiness wait can still fail and close it), and a local send, `!` command, Edit or manual compaction until it settles. The frame is kept meanwhile, and the operation's release rechecks it (`runningRecheckRef`). A local operation that starts during the lookup makes its answer stale (one generation per operation kind). A failed lookup is retried after 1, 2 and 4 s.
   - Compaction state has one owner at a time. A manual compaction this tab sends holds it until its command settles (`localCompactionsRef`): omp may not have the command yet, so an idle snapshot cannot release it; when it settles during an auto-compaction (`autoCompactingRef`), the control stays with the auto-compaction. Native snapshots (state polls, catch-up, attach, mount) apply only if no compaction started or ended since they were requested (`compactionGenRef`); `setCompacting` keeps `isCompactingRef` and the rendered state together.
@@ -2054,8 +2102,13 @@ during the wait.
   leak it); else if a visible tab with an open stream exists, `whenActive:
   "toast"` devices get a toast on their active tabs only; else push (subscribed
   devices) or in-page `showNotification` (tabs with an open stream).
-- The server decides before pushing: iOS revokes push permission for pushes
-  that display nothing, so `public/sw.js` always shows what it receives.
+- The server decides before pushing: a push that displays nothing is a silent
+  push, and iOS revokes the permission for one while Chromium and Firefox
+  substitute a generic card and eventually mute the origin. `public/sw.js`
+  therefore always shows what it receives, and a settled dialog is retracted on
+  the tab streams only (`{type: "notification-dismiss", tag, sessionId,
+  requestId}`) — never by a push. A device that is not reachable keeps the
+  stale card until the next `input` push replaces it by tag or the app syncs.
 - Notifications have their own `notifications` channel (`clientId` = the
   tab's notification client id), opened by `useNotifications` in `AppShell`,
   so a tab stays reachable on every view, Settings included. A tab on

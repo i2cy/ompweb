@@ -87,9 +87,14 @@ function canonicalProjectPath(value: string): string {
  *  them (bare or `--flag=value`), or a stored config could hijack the session
  *  boundary (`--cwd`/`--resume`/`--profile`) or the rpc-ui mode. `--profile`
  *  is reserved too: it would bypass the validated `profile` field and could
- *  hand omp a name it rejects, failing every session in the workspace. */
-const RESERVED_LAUNCH_ARGS: Record<string, true> = { "--mode": true, "rpc-ui": true, "--cwd": true, "--resume": true, "--profile": true };
-const RESERVED_LAUNCH_ARG_PREFIXES = ["--mode=", "--cwd=", "--resume=", "--profile="];
+ *  hand omp a name it rejects, failing every session in the workspace.
+ *  `--extension`/`--hook` (and `-e`) are reserved too: omp loads those files
+ *  (multiple allowed, headless in rpc-ui mode), and the daemon appends its own
+ *  session-edit extension after these args — a config-carried one would load
+ *  arbitrary extension code into every spawn for that workspace. `--plugin-dir`
+ *  is reserved for the same reason: it adds a directory to extension discovery. */
+const RESERVED_LAUNCH_ARGS: Record<string, true> = { "--mode": true, "rpc-ui": true, "--cwd": true, "--resume": true, "--profile": true, "--extension": true, "--hook": true, "-e": true, "--plugin-dir": true };
+const RESERVED_LAUNCH_ARG_PREFIXES = ["--mode=", "--cwd=", "--resume=", "--profile=", "--extension=", "--hook=", "-e=", "--plugin-dir="];
 export function isReservedLaunchArg(arg: string): boolean {
   return RESERVED_LAUNCH_ARGS[arg] === true || RESERVED_LAUNCH_ARG_PREFIXES.some((prefix) => arg.startsWith(prefix));
 }
@@ -179,10 +184,31 @@ export function upsertProject(
   const key = comparableProjectPath(canonical);
   const existing = registry.projects.find((p) => comparableProjectPath(p.path) === key);
   const projects = registry.projects.filter((p) => comparableProjectPath(p.path) !== key);
-  // An omitted launchConfig preserves the stored one: re-adding a workspace
-  // (e.g. un-hiding) without config must not wipe it. Explicit clear goes
-  // through PATCH with null.
-  projects.push({ path: canonical, addedAt: now, hidden: false, launchConfig: launchConfig ?? existing?.launchConfig });
+  // Re-adding a workspace (e.g. un-hiding) must not wipe its stored display
+  // data: alias, sort order, pin order, and launch config all carry over
+  // from the existing entry. An omitted launchConfig preserves the stored
+  // one; explicit clear goes through PATCH with null. Display fields have no
+  // POST parameter, so carrying them over is unconditional — PATCH applies
+  // its own updates on top afterwards.
+  // Pin-order collision: while this project was hidden, another project may
+  // have taken its pinOrder (fresh pins take max+1 over the visible list,
+  // which never counted the hidden entry). Keeping the duplicate would make
+  // the pinned order ambiguous — orderProjects only stable-sorts ties — so
+  // a colliding pin moves to the end of the pinned list instead of
+  // unpinning: the project stays pinned, just last.
+  let pinOrder = existing?.pinOrder;
+  if (pinOrder !== undefined && projects.some((p) => !p.hidden && p.pinOrder === pinOrder)) {
+    pinOrder = Math.max(-1, ...projects.filter((p) => !p.hidden).map((p) => p.pinOrder ?? -1)) + 1;
+  }
+  projects.push({
+    path: canonical,
+    addedAt: now,
+    hidden: false,
+    alias: existing?.alias,
+    sortOrder: existing?.sortOrder,
+    pinOrder,
+    launchConfig: launchConfig ?? existing?.launchConfig,
+  });
   return { version: 1, projects };
 }
 

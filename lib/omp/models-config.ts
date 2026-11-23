@@ -70,6 +70,14 @@ export function validateModelsConfig(config: ModelsFileConfig): void {
         throw new Error(`Provider ${providerName}: "apiKey" is required when defining custom models unless auth is "none".`);
       }
     }
+    // A value that merely CONTAINS the masked placeholder is a corrupted
+    // credential, not a key: the editor shows the placeholder as the field
+    // value, so typing a replacement after it produces e.g. eight bullets
+    // followed by sk-NEW, and persisting that would destroy the real key.
+    // The placeholder itself never reaches validation — restore drops it
+    // when there is nothing stored to restore.
+    assertNoMaskedSentinel(provider.apiKey, `Provider ${providerName}: "apiKey"`);
+    assertNoMaskedSentinel(provider.headers, `Provider ${providerName}: "headers"`);
     for (const model of models) {
       if (!isRecord(model) || typeof model.id !== "string" || !model.id) {
         throw new Error(`Provider ${providerName}: model missing "id"`);
@@ -77,6 +85,7 @@ export function validateModelsConfig(config: ModelsFileConfig): void {
       if (!provider.api && !model.api) {
         throw new Error(`Provider ${providerName}, model ${model.id}: no "api" specified. Set at provider or model level.`);
       }
+      assertNoMaskedSentinel(model.headers, `Provider ${providerName}, model ${model.id}: "headers"`);
       if (typeof model.contextWindow === "number" && model.contextWindow <= 0) {
         throw new Error(`Provider ${providerName}, model ${model.id}: invalid contextWindow`);
       }
@@ -131,6 +140,144 @@ function sanitizeModelsConfig(config: ModelsFileConfig): ModelsFileConfig {
       !isRecord(model) || typeof model.id !== "string" || model.id.trim().length > 0
     ));
     return [providerId, { ...provider, models }];
+  }));
+  return { ...config, providers };
+}
+
+/**
+ * Placeholder GET /api/models-config returns in place of a real credential
+ * value. The file API denies models.yml outright on the grounds that the
+ * purpose-built route "redacts what it returns" — returning keys verbatim
+ * defeated that denial, so the route must never emit a real credential. The
+ * placeholder is never a valid credential: PUT restores the stored value
+ * when it sees it, and drops it when there is nothing stored to restore, so
+ * it can never be persisted to disk.
+ */
+export const MASKED_API_KEY = "••••••••";
+
+/** Reject a credential value that contains the placeholder without being it. */
+function assertNoMaskedSentinel(value: unknown, label: string): void {
+  if (typeof value === "string" && value.includes(MASKED_API_KEY)) {
+    throw new Error(`${label} contains the masked placeholder — clear the field and type the full value`);
+  }
+  if (isRecord(value)) {
+    for (const [key, entry] of Object.entries(value)) {
+      if (typeof entry === "string" && entry.includes(MASKED_API_KEY)) {
+        throw new Error(`${label}.${key} contains the masked placeholder — clear the field and type the full value`);
+      }
+    }
+  }
+}
+
+/** Copy of a headers record with every value replaced by the placeholder. */
+function maskHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!isRecord(headers)) return headers;
+  return Object.fromEntries(Object.entries(headers).map(([key, value]) => (
+    [key, typeof value === "string" && value !== "" ? MASKED_API_KEY : value]
+  )));
+}
+
+/** Copy of a config with every provider `apiKey` and every provider/model
+ * header value replaced by the placeholder. Header values are credentials
+ * by construction (Authorization, X-Api-Key, Cookie, ...), so masking the
+ * apiKey alone still returned them in plaintext. */
+export function maskModelsConfigApiKeys(config: ModelsFileConfig): ModelsFileConfig {
+  if (!isRecord(config.providers)) return config;
+  const providers = Object.fromEntries(Object.entries(config.providers).map(([providerId, provider]) => {
+    if (!isRecord(provider)) return [providerId, provider];
+    const masked: Record<string, unknown> = { ...provider };
+    if (typeof provider.apiKey === "string" && provider.apiKey !== "") masked.apiKey = MASKED_API_KEY;
+    if (isRecord(provider.headers)) masked.headers = maskHeaders(provider.headers as Record<string, string>);
+    if (Array.isArray(provider.models)) {
+      masked.models = provider.models.map((model) => (
+        isRecord(model) && isRecord(model.headers)
+          ? { ...model, headers: maskHeaders(model.headers as Record<string, string>) }
+          : model
+      ));
+    }
+    return [providerId, masked];
+  }));
+  return { ...config, providers };
+}
+
+/** Undo masking for one credential-bearing record (a provider or a model):
+ * an exact placeholder echoes the stored value back, a genuinely new value
+ * overwrites it, and a placeholder with no stored value is dropped
+ * (validation then rejects providers that need a key rather than saving the
+ * placeholder as one). */
+function restoreMaskedRecord(
+  record: Record<string, unknown>,
+  stored: unknown,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...record };
+  if (record.apiKey === MASKED_API_KEY) {
+    const storedKey = isRecord(stored) ? stored.apiKey : undefined;
+    if (typeof storedKey === "string" && storedKey !== "") out.apiKey = storedKey;
+    else delete out.apiKey;
+  }
+  if (isRecord(record.headers)) {
+    const storedHeaders = isRecord(stored) && isRecord(stored.headers) ? stored.headers : {};
+    const headers: Record<string, unknown> = { ...(record.headers as Record<string, unknown>) };
+    for (const [key, value] of Object.entries(headers)) {
+      if (value !== MASKED_API_KEY) continue;
+      const storedValue = storedHeaders[key];
+      if (typeof storedValue === "string" && storedValue !== "") headers[key] = storedValue;
+      else delete headers[key];
+    }
+    out.headers = headers;
+  }
+  return out;
+}
+
+/**
+ * Undo masking on a client-submitted config.
+ *
+ * A record is matched to its stored counterpart by id; when a submitted id
+ * has no stored counterpart and exactly one stored record is absent from the
+ * submission, that orphan is the match — that is a rename, which otherwise
+ * loses the masked key (the editor keeps the provider object, mask included,
+ * under the new name). Two or more orphans make the match ambiguous, so no
+ * restore happens and validation fails safe instead of adopting a stranger's
+ * key.
+ */
+export function restoreModelsConfigApiKeys(config: ModelsFileConfig, stored: ModelsFileConfig): ModelsFileConfig {
+  if (!isRecord(config) || !isRecord(config.providers)) return config;
+  const storedProviders = isRecord(stored?.providers) ? stored.providers : {};
+  const submittedIds = new Set(Object.keys(config.providers));
+  const orphanProviders = Object.entries(storedProviders)
+    .filter(([id, provider]) => !submittedIds.has(id) && isRecord(provider));
+  const providers = Object.fromEntries(Object.entries(config.providers).map(([providerId, provider]) => {
+    if (!isRecord(provider)) return [providerId, provider];
+    const storedProvider = isRecord(storedProviders[providerId])
+      ? storedProviders[providerId]
+      : orphanProviders.length === 1 ? orphanProviders[0][1] : undefined;
+    let restored = restoreMaskedRecord(provider as Record<string, unknown>, storedProvider);
+    if (Array.isArray(provider.models) && isRecord(storedProvider) && Array.isArray(storedProvider.models)) {
+      const storedModels = storedProvider.models as unknown[];
+      const submittedModelIds = new Set(
+        (provider.models as unknown[]).map((m) => (isRecord(m) ? m.id : undefined)).filter((id): id is string => typeof id === "string"),
+      );
+      const orphanModels = storedModels.filter((m) => (
+        isRecord(m) && typeof m.id === "string" && !submittedModelIds.has(m.id)
+      ));
+      restored = {
+        ...restored,
+        models: (provider.models as unknown[]).map((model) => {
+          if (!isRecord(model)) return model;
+          const storedModel = storedModels.find((m) => isRecord(m) && m.id === model.id)
+            ?? (orphanModels.length === 1 ? orphanModels[0] : undefined);
+          return restoreMaskedRecord(model as Record<string, unknown>, storedModel);
+        }),
+      };
+    } else if (Array.isArray(provider.models)) {
+      restored = {
+        ...restored,
+        models: (provider.models as unknown[]).map((model) => (
+          isRecord(model) ? restoreMaskedRecord(model as Record<string, unknown>, undefined) : model
+        )),
+      };
+    }
+    return [providerId, restored];
   }));
   return { ...config, providers };
 }

@@ -113,7 +113,21 @@ async function listDirectory(input: WorkspaceFileRequest, root: string | null) {
     insideRoot = existingPathWithinRootsChecker(new Set([root]));
     if (!insideRoot(checked.filePath)) throw new HostOpError(403, "outside_root", "Outside the explorer root");
   }
-  const entries = fs.readdirSync(checked.filePath, { withFileTypes: true })
+  const entries = fs.readdirSync(checked.filePath, { withFileTypes: true });
+  // The directory was authorized above, but readdir runs after that check: a
+  // parent swap in between would list a directory outside the authorized
+  // root. Mirror openFile(): re-stat the same path and refuse when it is no
+  // longer the authorized directory (409 file_changed).
+  let listed: fs.Stats;
+  try {
+    listed = fs.statSync(checked.filePath);
+  } catch {
+    throw new HostOpError(409, "file_changed", "The directory changed while it was being listed");
+  }
+  if (listed.dev !== checked.stat.dev || listed.ino !== checked.stat.ino) {
+    throw new HostOpError(409, "file_changed", "The directory changed while it was being listed");
+  }
+  return { path: checked.filePath, entries: entries
     .flatMap((entry) => {
       const entryPath = path.join(checked.filePath, entry.name);
       const isDir = resolveDirentIsDirectory(entry, entryPath);
@@ -127,8 +141,7 @@ async function listDirectory(input: WorkspaceFileRequest, root: string | null) {
       const outsideRoot = insideRoot !== null && isLink && !insideRoot(entryPath);
       return [{ name: entry.name, isDir: isDir ?? false, size: 0, modified: "",
         ...(linkTarget !== undefined && { linkTarget }), ...(outsideRoot && { outsideRoot }) }];
-    }).sort((a, b) => a.isDir !== b.isDir ? (a.isDir ? -1 : 1) : a.name.localeCompare(b.name));
-  return { path: checked.filePath, entries };
+    }).sort((a, b) => a.isDir !== b.isDir ? (a.isDir ? -1 : 1) : a.name.localeCompare(b.name)) };
 }
 async function openFile(input: WorkspaceFileRequest) {
   const checked = await access(input, true);

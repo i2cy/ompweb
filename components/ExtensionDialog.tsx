@@ -5,6 +5,7 @@ import { Eye, EyeOff } from "lucide-react";
 import type { HtmlFormData } from "@/lib/pi-types";
 import type { AgentConfirmPayload, UiApprovalAnswer, UiDialogRequest, UiDialogValue } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
+import { isImeConfirmEnter } from "@/lib/ime-enter";
 import { useModalDialog } from "@/hooks/useModalDialog";
 import { matchMobileViewport } from "@/hooks/useIsMobile";
 import { SessionLink } from "./SessionLink";
@@ -770,7 +771,7 @@ export function ExtensionDialog({
                   placeholder={placeholder ?? undefined}
                   onChange={(e) => setValue(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") submitValue();
+                    if (e.key === "Enter" && !isImeConfirmEnter(e)) submitValue();
                   }}
                   className="extension-field"
                   style={{ width: "100%", paddingRight: isSensitive ? 36 : undefined }}

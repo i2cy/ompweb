@@ -1,6 +1,7 @@
 import { runNpx } from "@/lib/npx";
 import { createChildProcessEnvironment } from "@/lib/project-command-env";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { isValidSkillPackageName } from "@/lib/skill-package-name";
 
 const ANSI_RE = /\x1B\[[0-9;]*m/g;
 
@@ -9,11 +10,12 @@ export async function POST(req: Request) {
   try {
     const { package: pkg, scope, cwd } = await req.json() as { package?: string; scope?: string; cwd?: string };
     if (!pkg?.trim()) return Response.json({ error: "package required", code: "package_required" }, { status: 400 });
-    // npm package-name grammar: scope-optional, URL-safe segments. Rejecting
-    // leading dashes/`-` prefixes stops a value like `--force` from being
-    // interpreted as npx/CLI options instead of a package name.
+    // Accepts the npm grammar and the skills.sh source grammar
+    // (`owner/repo@skill`, what the search route returns); see
+    // lib/skill-package-name.ts. A leading `-` is still rejected so a value
+    // like `--force` cannot be interpreted as an npx/CLI option.
     const name = pkg.trim();
-    if (name.startsWith("-") || !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(name)) {
+    if (!isValidSkillPackageName(name)) {
       return Response.json({ error: "Invalid package name", code: "package_invalid" }, { status: 400 });
     }
     const isGlobal = scope !== "project";

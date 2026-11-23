@@ -12,14 +12,19 @@ function send(hostId: string, days: number | null, delay = 1_000): void {
     // 501: a daemon from before the op keeps what it has. 503: offline, the next hello tells it.
     if (error instanceof HostOpError && (error.status === 501 || error.status === 503)) return;
     console.warn(`[omp-web] could not set the upload retention on host ${hostId}: ${error instanceof Error ? error.message : String(error)}`);
-    const timer = setTimeout(() => {
+    // Deliberately ref'd: the retry must fire even when nothing else keeps
+    // the event loop alive. An unref'd timer was observed to be lost on
+    // Windows CI (issue #536: "the current policy to retry" never arrived),
+    // leaving the daemon on a superseded policy until the next hello or
+    // change. The callback re-checks the link and the current setting, so a
+    // late fire is harmless, and it never re-arms after disconnect.
+    setTimeout(() => {
       const host = getHost(hostId);
       // A pending retry must never restore an older, potentially more destructive setting.
       if (host && isLinkUp(host.status()) && loadWebServerSettings().uploadRetentionDays === days) {
         send(hostId, days, Math.min(delay * 2, 30_000));
       }
     }, delay);
-    timer.unref();
   });
 }
 

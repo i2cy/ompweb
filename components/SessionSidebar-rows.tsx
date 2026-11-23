@@ -11,6 +11,7 @@ import { transcriptToMarkdown } from "@/lib/transcript";
 import { toast } from "./ui/toast";
 import { SessionSearchMatches, type SearchMatchTarget } from "./SessionSearchMatches";
 import { hasDraft, subscribeDrafts } from "@/lib/draft-store";
+import { isImeConfirmEnter } from "@/lib/ime-enter";
 import {
   MAX_PROJECT_SESSIONS,
   formatRelativeTime,
@@ -18,13 +19,12 @@ import {
   type SessionTreeNode,
 } from "./SessionSidebar-helpers";
 import {
+  CompletedUnreadIndicator,
   ExitedSessionIndicator,
-  RecentlyCompletedIndicator,
   RunningSessionIndicator,
   SIDEBAR_BUTTON_TRANSITION,
   SidebarIconButton,
   SidebarPortalMenu,
-  UnreadSessionIndicator,
 } from "./SessionSidebar-chrome";
 
 /**
@@ -103,7 +103,6 @@ interface ProjectRowProps {
   runningSessionIds: Set<string>;
   awaitingInputIds: Set<string>;
   unreadSessionIds: Set<string>;
-  recentlyCompletedIds?: Set<string>;
   exitedSessions: Map<string, ExitedRpcSession>;
   relativeTimeNow: number;
   onActivate: (project: ManagedProject) => void;
@@ -143,7 +142,6 @@ function ProjectRow({
   runningSessionIds,
   awaitingInputIds,
   unreadSessionIds,
-  recentlyCompletedIds,
   exitedSessions,
   relativeTimeNow,
   onActivate,
@@ -282,6 +280,7 @@ function ProjectRow({
                 onBlur={commitAliasEdit}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
+                    if (isImeConfirmEnter(event)) return;
                     event.preventDefault();
                     commitAliasEdit();
                   }
@@ -487,7 +486,6 @@ function ProjectRow({
                   awaitingInputIds={awaitingInputIds}
                   unreadSessionIds={unreadSessionIds}
                   exitedSessions={exitedSessions}
-                  recentlyCompletedIds={recentlyCompletedIds}
                   relativeTimeNow={relativeTimeNow}
                   onSelectSession={onSelectSession}
                   onRenamed={onRenamed}
@@ -541,7 +539,6 @@ const SessionTreeItem = memo(function SessionTreeItem({
   awaitingInputIds,
   unreadSessionIds,
   exitedSessions,
-  recentlyCompletedIds,
   relativeTimeNow,
   onSelectSession,
   onRenamed,
@@ -556,7 +553,6 @@ const SessionTreeItem = memo(function SessionTreeItem({
   awaitingInputIds: Set<string>;
   unreadSessionIds: Set<string>;
   exitedSessions: Map<string, ExitedRpcSession>;
-  recentlyCompletedIds?: Set<string>;
   relativeTimeNow: number;
   onSelectSession: (s: SessionInfo) => void;
   onRenamed?: () => void;
@@ -577,7 +573,6 @@ const SessionTreeItem = memo(function SessionTreeItem({
   const isRunning = runningSessionIds.has(sessionId);
   const isAwaitingInput = awaitingInputIds.has(sessionId);
   const isUnread = unreadSessionIds.has(sessionId);
-  const isRecentlyCompleted = !isRunning && (recentlyCompletedIds?.has(sessionId) ?? false);
   const exited = exitedSessions.get(sessionId);
 
   // Stable callbacks: depend only on primitives / stable parent callbacks so
@@ -619,7 +614,6 @@ const SessionTreeItem = memo(function SessionTreeItem({
           isAwaitingInput={isAwaitingInput}
           isUnread={isUnread}
           exited={exited}
-          isRecentlyCompleted={isRecentlyCompleted}
           relativeTimeNow={relativeTimeNow}
           onClick={handleClick}
           onRenamed={onRenamed}
@@ -646,7 +640,6 @@ const SessionTreeItem = memo(function SessionTreeItem({
               awaitingInputIds={awaitingInputIds}
               unreadSessionIds={unreadSessionIds}
               exitedSessions={exitedSessions}
-              recentlyCompletedIds={recentlyCompletedIds}
               relativeTimeNow={relativeTimeNow}
               onSelectSession={onSelectSession}
               onRenamed={onRenamed}
@@ -676,11 +669,10 @@ const SessionTreeItem = memo(function SessionTreeItem({
     const id = prev.node.session.id;
     if (prev.awaitingInputIds.has(id) !== next.awaitingInputIds.has(id)) return false;
   }
-  if (prev.recentlyCompletedIds !== next.recentlyCompletedIds) {
-    const id = prev.node.session.id;
-    if ((prev.recentlyCompletedIds?.has(id) ?? false) !== (next.recentlyCompletedIds?.has(id) ?? false)) return false;
-  }
   if (prev.unreadSessionIds !== next.unreadSessionIds) {
+    // Nested rows render inside this memo boundary, so a parent must pass a
+    // changed set down even when only a descendant's unread state flipped.
+    if (prev.node.children.length > 0) return false;
     const id = prev.node.session.id;
     if (prev.unreadSessionIds.has(id) !== next.unreadSessionIds.has(id)) return false;
   }
@@ -700,7 +692,6 @@ const SessionItem = memo(function SessionItem({
   isAwaitingInput,
   isUnread,
   exited,
-  isRecentlyCompleted,
   onClick,
   onRenamed,
   onDeleted,
@@ -718,7 +709,6 @@ const SessionItem = memo(function SessionItem({
   isAwaitingInput?: boolean;
   isUnread?: boolean;
   exited?: ExitedRpcSession;
-  isRecentlyCompleted?: boolean;
   onClick: () => void;
   onRenamed?: () => void;
   onDeleted?: (id: string) => void;
@@ -903,7 +893,7 @@ const SessionItem = memo(function SessionItem({
         </button>
       )}
       {renaming ? (
-        <input ref={inputRef} autoFocus aria-label={t("sessionSidebar.rename")} value={renameValue} onChange={(event) => setRenameValue(event.target.value)} onBlur={commitRename} onKeyDown={(event) => { if (event.key === "Enter") void commitRename(); if (event.key === "Escape") { event.preventDefault(); renameCancelRef.current = true; setRenaming(false); } }} style={{ flex: 1, height: 25, padding: "3px 7px", border: "1px solid var(--accent)", borderRadius: "var(--radius-control)", outline: "none", background: "var(--bg)", color: "var(--text)", fontSize: 12 }} />
+        <input ref={inputRef} autoFocus aria-label={t("sessionSidebar.rename")} value={renameValue} onChange={(event) => setRenameValue(event.target.value)} onBlur={commitRename} onKeyDown={(event) => { if (event.key === "Enter" && !isImeConfirmEnter(event)) void commitRename(); if (event.key === "Escape") { event.preventDefault(); renameCancelRef.current = true; setRenaming(false); } }} style={{ flex: 1, height: 25, padding: "3px 7px", border: "1px solid var(--accent)", borderRadius: "var(--radius-control)", outline: "none", background: "var(--bg)", color: "var(--text)", fontSize: 12 }} />
       ) : (
         <>
           {depth > 0 && <GitBranch size={11} strokeWidth={2} style={{ flexShrink: 0, color: "var(--text-dim)" }} aria-hidden="true" />}
@@ -925,15 +915,13 @@ const SessionItem = memo(function SessionItem({
           {session.worktreeBranch && <span title={t("sessionSidebar.worktreeTitle", { path: session.cwd })} style={{ display: "flex", alignItems: "center", gap: 3, maxWidth: 56, minWidth: 0, overflow: "hidden", color: "var(--text-dim)", fontSize: 10, flexShrink: 1 }}><GitBranch size={10} strokeWidth={2.4} aria-hidden="true" /><span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.worktreeBranch}</span></span>}
           {hasChildren && <button className="session-item-icon-button" onClick={(event) => { event.stopPropagation(); onToggleCollapse?.(); }} title={collapsed ? t("sessionSidebar.expandForks") : t("sessionSidebar.collapseForks")} aria-label={collapsed ? t("sessionSidebar.expandForks") : t("sessionSidebar.collapseForks")} aria-expanded={!collapsed} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, padding: 0, flexShrink: 0, border: "none", background: "none", color: "var(--text-dim)", cursor: "pointer", transform: collapsed ? "rotate(-90deg)" : "none", transition: "transform var(--dur-fast) var(--ease-out-warm)" }}><ChevronDown size={12} strokeWidth={1.8} aria-hidden="true" /></button>}
           <div style={{ display: "flex", alignItems: "center", gap: SIDEBAR_STATUS_GAP, flexShrink: 0 }}>
-            {(isRunning || exited || isRecentlyCompleted || isUnread) && (
+            {(isRunning || exited || isUnread) && (
               <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: SIDEBAR_STATUS_SLOT, height: SIDEBAR_STATUS_SLOT, flexShrink: 0 }}>
                 {isRunning
                   ? <RunningSessionIndicator size={12} />
                   : exited
                     ? <ExitedSessionIndicator title={exitTitle} size={12} />
-                    : isRecentlyCompleted
-                      ? <RecentlyCompletedIndicator size={12} />
-                      : <UnreadSessionIndicator size={11} />}
+                    : <CompletedUnreadIndicator size={12} />}
               </span>
             )}
             <div className="session-item-trailing" style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", flexShrink: 0 }}>

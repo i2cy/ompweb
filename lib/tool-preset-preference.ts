@@ -34,3 +34,28 @@ export function setPreferredToolPreset(preset: ToolPreset, storage: StorageLike 
     // Preferences remain optional when storage is unavailable.
   }
 }
+
+const SESSION_STORAGE_KEY_PREFIX = "omp-web:tool-preset:";
+
+/** The preset a session was spawned with, recorded at spawn time (#356).
+ * Null when unknown: a session from before this was recorded, or from
+ * another browser or process. The server exposes no per-session toolset,
+ * so only sessions this browser spawned can be known. */
+export function getSessionToolPreset(sessionId: string | null, storage: StorageLike | null = browserStorage()): ToolPreset | null {
+  if (!storage || !sessionId) return null;
+  try {
+    const value = storage.getItem(`${SESSION_STORAGE_KEY_PREFIX}${sessionId}`);
+    return isToolPreset(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setSessionToolPreset(sessionId: string, preset: ToolPreset, storage: StorageLike | null = browserStorage()): void {
+  if (!storage || !sessionId) return;
+  try {
+    storage.setItem(`${SESSION_STORAGE_KEY_PREFIX}${sessionId}`, preset);
+  } catch {
+    // The record is optional when storage is unavailable.
+  }
+}

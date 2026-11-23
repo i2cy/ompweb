@@ -2,11 +2,13 @@ import "../../tests/setup-dom.mjs";
 import assert from "node:assert/strict";
 import test, { afterEach, before } from "node:test";
 import React from "react";
+import userEvent from "@testing-library/user-event";
 const { act, cleanup, render, renderHook } = await import("@testing-library/react/pure.js");
 
 // Same specifiers as useNotifications' own imports: on Windows a relative path
 // can load a second toast module, whose manager the rendered provider never sees.
 const { ClampedDescription, ToastProvider, toast } = await import("@/components/ui/toast");
+const { setLocale } = await import("@/lib/i18n");
 const { useNotifications } = await import("@/hooks/useNotifications");
 const { notificationHistory } = await import("@/lib/notification-history");
 
@@ -25,6 +27,12 @@ function deliverNotification(message) {
   const id = [...eventStreams].findLast(([, channel]) => channel.kind === "notifications")?.[0];
   assert.ok(id, "useNotifications must hold a notifications channel");
   eventWorker.onmessage({ data: { id, type: "message", data: JSON.stringify({ type: "notification", ...message }) } });
+}
+/** A frame the server's notification channel sends verbatim (lib/event-stream-hub.ts). */
+function deliverFrame(frame) {
+  const id = [...eventStreams].findLast(([, channel]) => channel.kind === "notifications")?.[0];
+  assert.ok(id, "useNotifications must hold a notifications channel");
+  eventWorker.onmessage({ data: { id, type: "message", data: JSON.stringify(frame) } });
 }
 
 before(() => {
@@ -124,6 +132,59 @@ test("a session notification toast opens its session from a card click; one with
   assert.deepEqual(sessions, ["s1"]);
 });
 
+test("a retraction frame closes the toast of its own request and leaves a newer dialog of the same tag", async () => {
+  render(React.createElement(ToastProvider, null));
+  renderHook(() => useNotifications({ sessionId: null, locale: "en", onOpenSession: () => {} }));
+  const cards = () => Array.from(document.querySelectorAll(".toast-card"));
+  const titles = () => cards().map((card) => card.querySelector(".display-serif")?.textContent);
+
+  // The first dialog of this session, then the retraction that settles it.
+  act(() => {
+    deliverNotification({ kind: "toast", event: { type: "input", sessionId: "s1", sessionName: "Deploy", detail: "Ship it?", requestId: "req-1" } });
+  });
+  assert.deepEqual(titles(), ["Deploy"]);
+  act(() => {
+    deliverFrame({ type: "notification-dismiss", tag: "s1:input", sessionId: "s1", requestId: "req-1" });
+  });
+  assert.deepEqual(titles(), [], "the settled question's card is gone");
+
+  // A replacement dialog of the same tag: a late retraction of the old request
+  // must not close it, and the matching one does.
+  act(() => {
+    deliverNotification({ kind: "toast", event: { type: "input", sessionId: "s1", sessionName: "Deploy", detail: "Or now?", requestId: "req-2" } });
+  });
+  act(() => {
+    deliverFrame({ type: "notification-dismiss", tag: "s1:input", sessionId: "s1", requestId: "req-1" });
+  });
+  assert.deepEqual(titles(), ["Deploy"], "a stale retraction leaves the next dialog alone");
+  act(() => {
+    deliverFrame({ type: "notification-dismiss", tag: "s1:input", sessionId: "s1", requestId: "req-2" });
+  });
+  assert.deepEqual(titles(), []);
+});
+
+test("a retraction refreshes the history mirror, so a settled entry stops showing as unread", async () => {
+  const requests = [];
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    requests.push([init.method ?? "GET", String(url)]);
+    return { ok: true, json: async () => ({ entries: [] }) };
+  };
+  try {
+    renderHook(() => useNotifications({ sessionId: null, locale: "en", onOpenSession: () => {} }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    requests.length = 0;
+    await act(async () => {
+      deliverFrame({ type: "notification-dismiss", tag: "s1:input", sessionId: "s1", requestId: "req-1" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    assert.deepEqual(requests, [["GET", "/api/notifications/history"]], "the tab re-reads what the server marked read");
+  } finally {
+    globalThis.fetch = previousFetch;
+    act(() => notificationHistory.clear());
+  }
+});
+
 test("a notification the OS showed is listed in history", async () => {
   const created = [];
   // Bare `Notification` in the code under test resolves to the global, not window.
@@ -171,5 +232,59 @@ test("a push the service worker showed reloads the list from the server; other m
     globalThis.fetch = previousFetch;
     delete window.navigator.serviceWorker;
     act(() => notificationHistory.clear());
+  }
+});
+
+test("clamped description is keyboard-operable: Tab focuses it, Space/Enter expand it", async () => {
+  render(React.createElement(ClampedDescription, null, "line1\nline2\nline3\nline4"));
+  const description = document.querySelector("[aria-expanded]");
+  assert.ok(description, "clamped description renders");
+  // Stays a span, not a button: base-ui's ToastRoot skips swipe gestures
+  // starting on buttons (and [role="button"]), so a button here would break
+  // swipe-to-dismiss starting on the description.
+  assert.equal(description.tagName, "SPAN");
+  assert.equal(description.tabIndex, 0);
+  assert.equal(description.getAttribute("aria-expanded"), "false");
+  const user = userEvent.setup();
+  await user.tab();
+  assert.equal(document.activeElement, description);
+  await user.keyboard(" ");
+  assert.equal(description.getAttribute("aria-expanded"), "true");
+  await user.keyboard(" ");
+  assert.equal(description.getAttribute("aria-expanded"), "false");
+  await user.keyboard("{Enter}");
+  assert.equal(description.getAttribute("aria-expanded"), "true");
+});
+
+test("a swipe starting on the clamped description still dismisses the toast", () => {
+  const { card } = show("line1\nline2\nline3\nline4", { clamp: true });
+  const description = card().querySelector("[aria-expanded]");
+  assert.ok(description, "clamped description renders inside the toast");
+  // A touch swipe: base-ui ignores swipes starting on interactive elements,
+  // so if the description ever becomes a button again this swipe never
+  // starts and the toast stays.
+  const touch = (target, type, x, y) => {
+    const event = new window.MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, detail: 1 });
+    Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: "touch" } });
+    act(() => { target.dispatchEvent(event); });
+  };
+  touch(description, "pointerdown", 100, 50);
+  touch(description, "pointermove", 110, 50);
+  touch(description, "pointermove", 200, 52);
+  touch(description, "pointerup", 200, 52);
+  assert.equal(card()?.hasAttribute("data-ending-style") ?? true, true);
+});
+
+test("toast close button uses the localized dismiss label, not hardcoded English", () => {
+  // In English the localized value happens to equal the old hardcoded
+  // "Dismiss", so this test switches to Japanese: pre-fix it sees the
+  // hardcoded English label, post-fix the Japanese one.
+  act(() => { setLocale("ja"); });
+  try {
+    render(React.createElement(ToastProvider, null));
+    act(() => { toast.info("Saved"); });
+    assert.equal(document.querySelector(".toast-close-button").getAttribute("aria-label"), "閉じる");
+  } finally {
+    act(() => { setLocale("en"); });
   }
 });

@@ -20,3 +20,16 @@ export function getToolNamesForPreset(preset: ToolPreset): string[] | undefined 
   if (preset === "full") return undefined;
   return [...PRESET_DEFAULT];
 }
+
+export function getPresetForToolNames(toolNames: string[] | undefined): ToolPreset | null {
+  if (toolNames === undefined) return "full";
+  if (toolNames.length === 0) return "none";
+  const key = [...toolNames].map((name) => name.toLowerCase()).sort().join(",");
+  return key === [...PRESET_DEFAULT].sort().join(",") ? "default" : null;
+}
+
+/** How many tools a preset grants: null for "full" (unrestricted — whatever omp ships). */
+export function getToolPresetToolCount(preset: ToolPreset): number | null {
+  const names = getToolNamesForPreset(preset);
+  return names === undefined ? null : names.length;
+}

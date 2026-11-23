@@ -18,6 +18,7 @@ import { notificationHistory, useUnreadNotificationCount } from "@/lib/notificat
 import { ConfirmDialog } from "./ui/field";
 import { ThemedSelect } from "./ui/primitives";
 import { ChatWindow } from "./ChatWindow";
+import { SessionTabs, type SessionTab } from "./SessionTabs";
 import { type Tab } from "./TabBar";
 import { type FileExplorerHandle } from "./FileExplorer";
 import type { RightPanelView } from "./RightPanel";
@@ -120,6 +121,22 @@ const EXPAND_THINKING_STORAGE_KEY = "omp-web:expand-thinking";
 const PROVIDER_USAGE_VISIBLE_STORAGE_KEY = "omp-web:provider-usage-visible";
 const NATIVE_SELECT_ALL_STORAGE_KEY = "omp-web:scope-native-select-all";
 const OPEN_URL_AUTOMATICALLY_STORAGE_KEY = "omp-web:open-url-automatically";
+const SESSION_TABS_STORAGE_KEY = "omp-web:session-tabs";
+
+/** Tabs the user left open, restored across reloads; validated, never trusted blindly. */
+function loadSessionTabs(): SessionTab[] {
+  try {
+    const raw = window.localStorage.getItem(SESSION_TABS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is SessionTab => typeof entry === "object" && entry !== null
+      && typeof (entry as SessionTab).id === "string" && (entry as SessionTab).id.length > 0
+      && ((entry as SessionTab).hostId === undefined || typeof (entry as SessionTab).hostId === "string"));
+  } catch {
+    return [];
+  }
+}
 
 
 type AutoNameStatus =
@@ -137,6 +154,25 @@ export function AppShell({ appName }: { appName: string }) {
   const isMobile = useIsMobile();
   const isCompactOverlay = useIsCompactOverlay();
   const [selectedSession, setSelectedSession] = useState<SessionInfo | null>(null);
+  // Sessions opened in tabs above the chat: every visited session joins, in
+  // visit order; closing a tab only forgets it here, never deletes it.
+  const [openSessionTabs, setOpenSessionTabs] = useState<SessionTab[]>(() => loadSessionTabs());
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SESSION_TABS_STORAGE_KEY, JSON.stringify(openSessionTabs));
+    } catch {
+      // Tabs still work for this page load without persistence.
+    }
+  }, [openSessionTabs]);
+  useEffect(() => {
+    const id = selectedSession?.id;
+    if (!id) return;
+    const hostId = selectedSession?.hostId;
+    setOpenSessionTabs((prev) => {
+      if (prev.some((tab) => tab.id === id && (tab.hostId ?? "local") === (hostId ?? "local"))) return prev;
+      return [...prev, { id, ...(hostId ? { hostId } : {}) }];
+    });
+  }, [selectedSession?.id, selectedSession?.hostId]);
   // The transient identity belongs to one intentional new chat, not one request attempt.
   const [newSessionCwd, setNewSessionCwd] = useState<string | null>(null);
   // Host of newSessionCwd; undefined is this machine. Every host-aware state
@@ -181,13 +217,15 @@ export function AppShell({ appName }: { appName: string }) {
   // UI-only behavior, so it lives in localStorage rather than omp's config.
   const [expandThinkingByDefault, setExpandThinkingByDefault] = useState(false);
   const [hideThinkingBlock, setHideThinkingBlock] = useState(false);
+  // Global omp `advisor.enabled`: brand-new chats start with Advisor on.
+  const [advisorDefault, setAdvisorDefault] = useState(false);
   useEffect(() => {
     // omp's own setting, so the transcript hides thinking when the TUI does.
     // Re-read on focus: the TUI or another tab may have changed it.
     const load = () => {
       fetch("/api/omp-settings")
         .then((response) => (response.ok ? response.json() : null))
-        .then((data: { settings?: { hideThinkingBlock?: boolean } } | null) => { if (data) setHideThinkingBlock(data.settings?.hideThinkingBlock === true); })
+        .then((data: { settings?: { hideThinkingBlock?: boolean; advisor?: { enabled?: boolean } } } | null) => { if (data) { setHideThinkingBlock(data.settings?.hideThinkingBlock === true); setAdvisorDefault(data.settings?.advisor?.enabled === true); } })
         .catch(() => {});
     };
     load();
@@ -1343,6 +1381,15 @@ export function AppShell({ appName }: { appName: string }) {
     }
   }, [router, isMobile, selectedSession]);
 
+  // Close one session tab: forget it here only, never delete the session.
+  // Closing the selected tab shows its neighbour (picked by SessionTabs), or
+  // the empty state when it was the last tab.
+  const handleCloseSessionTab = useCallback((tab: SessionTab, next: SessionInfo | null) => {
+    setOpenSessionTabs((prev) => prev.filter((entry) => !(entry.id === tab.id && (entry.hostId ?? "local") === (tab.hostId ?? "local"))));
+    if (next) handleSelectSession(next);
+    else if (selectedSession?.id === tab.id) setSelectedSession(null);
+  }, [handleSelectSession, selectedSession?.id]);
+
   const handleNewSession = useCallback((creationId: string, cwd: string | null, hostId?: string, project?: ManagedProject, initialization?: string) => {
     setSettingsTab(null);
     setSelectedSession(null);
@@ -1610,6 +1657,7 @@ export function AppShell({ appName }: { appName: string }) {
     // The composer for this session can never be reopened, so its draft would
     // otherwise keep the exit guard armed for unreachable content.
     clearDraft(sessionId);
+    setOpenSessionTabs((prev) => prev.filter((tab) => tab.id !== sessionId));
     setRefreshKey((k) => k + 1);
     if (selectedSession?.id === sessionId) {
       const cwd = selectedSession.cwd;
@@ -1876,11 +1924,15 @@ export function AppShell({ appName }: { appName: string }) {
 
   const handleViewFullHistory = useCallback(() => {
     if (!selectedSession) return;
-    window.open(
-      `/api/sessions/${encodeURIComponent(selectedSession.id)}/export?inline=1`,
-      "_blank",
-      "noopener,noreferrer",
-    );
+    // Exports are always served as attachments (stored-XSS hardening: omp
+    // embeds transcript HTML unescaped), so download the file instead of
+    // opening it in a tab.
+    const link = document.createElement("a");
+    link.href = `/api/sessions/${encodeURIComponent(selectedSession.id)}/export`;
+    link.download = "";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
   }, [selectedSession]);
 
   // Show chat area if a session is selected, or if we have a cwd to start a new session in
@@ -2553,6 +2605,10 @@ export function AppShell({ appName }: { appName: string }) {
               className="shell-topbar-metrics"
               style={{
                 flex: "0 1 calc(10ch + 33px)",
+                // Inline-size containment zeroes the content width, so without an
+                // explicit width the right group sizes this box to 0 and the
+                // `topbar-speed` container query hides the pill even with room to spare.
+                width: "calc(10ch + 33px)",
                 minWidth: 0,
                 fontSize: 11,
                 fontFamily: "var(--font-mono)",
@@ -2645,6 +2701,14 @@ export function AppShell({ appName }: { appName: string }) {
 
         {/* Chat content */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+          {openSessionTabs.length > 0 && (
+            <SessionTabs
+              tabs={openSessionTabs}
+              selectedId={selectedSession?.id ?? null}
+              onSelect={handleSelectSession}
+              onClose={handleCloseSessionTab}
+            />
+          )}
           {showChat ? (
             <ChatWindow
               key={sessionKey}
@@ -2778,6 +2842,7 @@ export function AppShell({ appName }: { appName: string }) {
               showToolCallsUnfolded={showToolCallsUnfolded}
               expandThinkingByDefault={expandThinkingByDefault}
               hideThinkingBlock={hideThinkingBlock}
+              advisorDefault={advisorDefault}
               searchQuery={chatSearchQuery}
               searchTarget={searchMatchTarget && searchMatchTarget.sessionId === selectedSession?.id ? searchMatchTarget : null}
               onSearchTargetHandled={clearSearchMatchTarget}

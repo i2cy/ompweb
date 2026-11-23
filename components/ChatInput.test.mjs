@@ -447,3 +447,97 @@ test("renders retry banner with countdown when delayMs and startedAt are provide
 
   assert.match(html, /Retrying \(2\/5\) in 10s…/);
 });
+
+/** The active-toolset badge (#356 item 2): plain text, like the plus menu's raw preset values. */
+function renderToolset(props = {}) {
+  const html = renderToStaticMarkup(
+    React.createElement(ChatInput, {
+      async onSend() { return { status: "accepted" }; },
+      onToolPresetChange() {},
+      isStreaming: false,
+      ...props,
+    }),
+  );
+  const dom = new JSDOM(html);
+  const buttons = [...dom.window.document.querySelectorAll("button")];
+  const badge = buttons.find((button) => button.textContent.startsWith("tools:"));
+  const statuses = [...dom.window.document.querySelectorAll('[role="status"]')];
+  const banner = statuses.find((node) => /only \d+ tools|no tools enabled|restrictedToolsBanner/.test(node.textContent));
+  return { dom, badge, banner };
+}
+
+test("toolset badge shows the preset and its tool count next to the context gauge", () => {
+  for (const [preset, label] of [["full", "tools: full"], ["default", "tools: default (4)"], ["none", "tools: none (0)"]]) {
+    const { dom, badge, banner } = renderToolset({ toolPreset: preset });
+    try {
+      assert.equal(badge?.textContent, label);
+      assert.equal(banner, undefined);
+    } finally {
+      dom.window.close();
+    }
+  }
+});
+
+test("toolset badge shows the session's spawn preset, not the preference for new sessions", () => {
+  const { dom, badge } = renderToolset({ toolPreset: "default", sessionToolPreset: "full" });
+  try {
+    assert.equal(badge?.textContent, "tools: full");
+  } finally {
+    dom.window.close();
+  }
+  const recorded = renderToolset({ toolPreset: "full", sessionToolPreset: "default" });
+  try {
+    assert.equal(recorded.badge?.textContent, "tools: default (4)");
+  } finally {
+    recorded.dom.window.close();
+  }
+});
+
+test("no toolset badge without a preset change handler", () => {
+  const { dom, badge } = renderToolset({ toolPreset: "default", onToolPresetChange: undefined });
+  try {
+    assert.equal(badge, undefined);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("restricted sessions get a persistent banner with a restore action", () => {
+  const { dom, banner } = renderToolset({ sessionToolPreset: "default", onToolPresetChange() {} });
+  try {
+    assert.ok(banner, "a session spawned with the default preset must show the banner");
+    assert.match(banner.textContent, /(This session runs with only 4 tools|chatInput\.restrictedToolsBanner)/);
+    assert.match(banner.textContent, /(Restore full tools|chatInput\.restoreFullTools)/);
+  } finally {
+    dom.window.close();
+  }
+  const none = renderToolset({ sessionToolPreset: "none", onToolPresetChange() {} });
+  try {
+    assert.ok(none.banner, "a session spawned with no tools must show the banner");
+    assert.match(none.banner.textContent, /(no tools enabled|chatInput\.restrictedToolsBannerNone)/);
+  } finally {
+    none.dom.window.close();
+  }
+});
+
+test("no restricted banner for full sessions, unknown sessions, or a new full chat", () => {
+  for (const props of [
+    { sessionToolPreset: "full" },
+    // Unknown existing session: the preference is for new sessions only, so no claim is made about this one.
+    { toolPreset: "default" },
+    { isNewSession: true, toolPreset: "full" },
+  ]) {
+    const { dom, banner } = renderToolset(props);
+    try {
+      assert.equal(banner, undefined, JSON.stringify(props));
+    } finally {
+      dom.window.close();
+    }
+  }
+  const fresh = renderToolset({ isNewSession: true, toolPreset: "default" });
+  try {
+    assert.ok(fresh.banner, "a new chat that would spawn restricted must show the banner");
+  } finally {
+    fresh.dom.window.close();
+  }
+});

@@ -14,6 +14,7 @@ import { Toast } from "@base-ui/react/toast";
 import { AlertCircle, Check, Info, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { useI18n } from "@/lib/i18n";
 import type React from "react";
 
 type ToastKind = "success" | "error" | "info";
@@ -114,9 +115,23 @@ export function clampDescriptionStyle(expanded: boolean): React.CSSProperties {
  */
 export function ClampedDescription({ children }: { children: React.ReactNode }) {
   const [expanded, setExpanded] = useState(false);
+  // Keyboard-operable, but deliberately NOT a <button>: base-ui's ToastRoot
+  // skips swipe gestures that start on a button (or [role="button"]), so a
+  // button here would silently break swipe-to-dismiss starting on the
+  // description — most of the card. A focusable span with Enter/Space
+  // handling gives keyboard users the same expand affordance, and the card's
+  // and notification row's click guards (which already skip [aria-expanded]
+  // targets) keep treating it as expandable text rather than the card/row
+  // action.
   return (
     <span
+      tabIndex={0}
       onClick={() => setExpanded((v) => !v)}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        setExpanded((v) => !v);
+      }}
       aria-expanded={expanded}
       title={expanded ? undefined : "Click to expand"}
       style={clampDescriptionStyle(expanded)}
@@ -196,6 +211,8 @@ export function createSwipeTracker(startX: number): SwipeTracker {
 }
 
 function Toaster() {
+  // Aliased: the toasts.map() below binds each toast item as `t`.
+  const { t: tr } = useI18n();
   const { toasts } = Toast.useToastManager<ToastData>();
   const isMobile = useIsMobile();
   const clickGuard = useDragClickGuard();
@@ -310,7 +327,7 @@ function Toaster() {
             </Toast.Content>
             <Toast.Close
               className="toast-close-button"
-              aria-label="Dismiss"
+              aria-label={tr("toast.dismiss")}
               style={dismissButtonStyle}
             >
               <X size={12} strokeWidth={2} aria-hidden />

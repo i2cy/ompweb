@@ -234,9 +234,15 @@ function sameAgentPath(left: string, right: string): boolean {
 // resolves both names to the same directory entry even though the POSIX
 // string compare differs. realpathSync.native (realpath(3)) returns the
 // on-disk casing — the JS realpathSync preserves input casing — so case
-// aliases compare equal while distinct hardlink entries to the same inode
-// (a real name collision) stay distinct.
+// aliases compare equal.
+// Distinct hardlink entries to the same inode (a real name collision) must
+// stay distinct — but realpath alone cannot be trusted for that on macOS:
+// Verify failed there with the hardlink collision silently accepted, while
+// the same test passes on Linux and Windows. Names that are not case
+// variants of each other can never be the same directory entry, so reject
+// those before asking realpath anything.
 function sameOnDiskEntry(left: string, right: string): boolean {
+  if (basename(resolve(left)).toLowerCase() !== basename(resolve(right)).toLowerCase()) return false;
   try {
     return realpathSync.native(left) === realpathSync.native(right);
   } catch {

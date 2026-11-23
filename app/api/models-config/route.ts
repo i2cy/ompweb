@@ -3,11 +3,14 @@ import { invalidateModelsCache } from "@/lib/models-cache";
 import { disposeUtilityRpc } from "@/lib/omp/rpc-utility";
 import {
   ModelsConfigParseError,
+  maskModelsConfigApiKeys,
   readModelsConfigFile,
+  restoreModelsConfigApiKeys,
   validateModelsConfig,
   writeModelsConfig,
   type ModelsFileConfig,
 } from "@/lib/omp/models-config";
+import { isRecord } from "@/lib/type-guards";
 
 export async function GET() {
   const file = readModelsConfigFile();
@@ -21,7 +24,9 @@ export async function GET() {
       code: "models_config_unparseable",
     });
   }
-  return Response.json(file.config);
+  // Never emit a real credential: the file API denies models.yml outright,
+  // and this route is the scoped alternative to that denial.
+  return Response.json(maskModelsConfigApiKeys(file.config));
 }
 
 // PUT /api/models-config[?overwrite=true]
@@ -30,13 +35,23 @@ export async function PUT(req: Request) {
   try {
     const overwriteUnparseable = new URL(req.url).searchParams.get("overwrite") === "true";
     const body = await req.json() as ModelsFileConfig;
+    // A null body is a client error, not a server one: the restore step
+    // below used to throw on it, turning a 400 into a 500.
+    if (!isRecord(body)) {
+      return Response.json({ error: "Config must be an object" }, { status: 400 });
+    }
+    // The editor echoes masked credentials back on every save; restore the
+    // stored values for those, so an unrelated edit never wipes (or leaks,
+    // then re-saves) a credential, and a placeholder is never written to disk.
+    const stored = readModelsConfigFile();
+    const restored = restoreModelsConfigApiKeys(body, stored.parseError ? { providers: {} } : stored.config);
     try {
-      validateModelsConfig(body);
+      validateModelsConfig(restored);
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
     }
     try {
-      writeModelsConfig(body, { overwriteUnparseable });
+      writeModelsConfig(restored, { overwriteUnparseable });
     } catch (error) {
       if (error instanceof ModelsConfigParseError) {
         return Response.json(

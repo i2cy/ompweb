@@ -47,6 +47,13 @@ export const LINK_LIMITS = {
    * link's server side uses it as a cap: its window follows the link below it (lib/browser-link.ts `measure`). */
   unackedBytes: 2 * 256 * 1024,
   uplinkBytes: 16 * 1024 * 1024,
+  /** Per-link bound on queued plus unacknowledged downlink bytes (spec D6):
+   * a command that would take the backlog past this is rejected before it is
+   * recorded, so a slow daemon cannot grow the hub's retained backlog
+   * without bound. 4x maxLineBytes, so a max-size line is always admittable
+   * on an empty link; the same order as channelBufferBytes and the daemon's
+   * per-channel 32 MB resync cap. */
+  downlinkBacklogBytes: 32 * 1024 * 1024,
   blobBytes: 64 * 1024 * 1024,
   inlineResultBytes: 1024 * 1024,
   opTimeoutMs: 30_000,
@@ -183,6 +190,9 @@ export type UpMessage =
   | { type: "resync"; seq: number; ch: string }
   | { type: "notifier"; seq: number; on: boolean }
   | { type: "sessions_changed"; seq: number }
+  /** The omp version found after the hello said none (the runner arrived or first answered later); a hub that predates
+   * it skips the type and keeps "omp not installed" until the next hello. */
+  | { type: "omp_version"; seq: number; ompVersion: string }
   | { type: "channels_changed"; seq: number; channels: HelloChannel[] }
   /** The daemon's link samples, at most LINK_LIMITS.statsSamples; a hub that predates it skips the type. Advisory: the
    * receiver keeps the valid ones and counts the rest in `invalid` (decodeUp only; a sender leaves it out). */
@@ -305,7 +315,7 @@ export function isHostOp(name: string): name is HostOpName {
 }
 
 const DOWN_TYPES: readonly string[] = ["welcome", "stdin", "kill", "interest", "host_tools", "req", "ping", "pong", "ack"];
-const UP_TYPES: readonly string[] = ["hello", "stdout", "stderr", "exit", "resync", "notifier", "sessions_changed", "channels_changed", "stats", "capacity", "config_state", "res", "upload_ack", "workspace_file", "ping", "pong", "ack"];
+const UP_TYPES: readonly string[] = ["hello", "stdout", "stderr", "exit", "resync", "notifier", "sessions_changed", "omp_version", "channels_changed", "stats", "capacity", "config_state", "res", "upload_ack", "workspace_file", "ping", "pong", "ack"];
 
 /** `otherDirection`: the types only the other direction decodes; one of those arrived on the wrong way. */
 function unknownMessage(o: Obj, otherDirection: readonly string[]): UnknownMessage {
@@ -524,6 +534,8 @@ export function decodeUp(line: string): UpMessage | UnknownMessage {
       return { type: "notifier", seq: seqNum(o, "seq"), on: bool(o, "on") };
     case "sessions_changed":
       return { type: "sessions_changed", seq: seqNum(o, "seq") };
+    case "omp_version":
+      return { type: "omp_version", seq: seqNum(o, "seq"), ompVersion: str(o, "ompVersion") };
     case "channels_changed":
       return { type: "channels_changed", seq: seqNum(o, "seq"), channels: channels(o) };
     case "stats":

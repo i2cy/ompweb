@@ -144,9 +144,14 @@ test("pressing Space on a row opens its session, like Enter", () => {
   window.addEventListener(OPEN_SESSION_EVENT, onOpen);
   try {
     const { row } = mount();
-    act(() => { row().dispatchEvent(new window.KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true })); });
+    const space = (target) => act(() => { target.dispatchEvent(new window.KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true })); });
+    space(row());
     assert.deepEqual(opened, ["n1-session"]);
     assert.equal(notificationHistory.get()[0].read, true);
+    // Space on the expandable description or the dismiss button must not open the session.
+    space(row().querySelector("[aria-expanded]"));
+    space(row().querySelector("button"));
+    assert.equal(opened.length, 1);
   } finally {
     window.removeEventListener(OPEN_SESSION_EVENT, onOpen);
   }

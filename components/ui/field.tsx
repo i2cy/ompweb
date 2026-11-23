@@ -372,6 +372,10 @@ interface SecretInputProps {
   showLabel: string;
   hideLabel: string;
   id?: string;
+  /** Select the whole value on focus, so typing replaces it instead of
+   * appending to it — a stored credential is shown as its masked
+   * placeholder, and appending a new key to the placeholder corrupts it. */
+  selectAllOnFocus?: boolean;
 }
 
 export function SecretInput({
@@ -385,6 +389,7 @@ export function SecretInput({
   showLabel,
   hideLabel,
   id,
+  selectAllOnFocus,
 }: SecretInputProps) {
   const [visible, setVisible] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -406,7 +411,10 @@ export function SecretInput({
         autoComplete="off"
         spellCheck={false}
         aria-invalid={isInvalid || undefined}
-        onFocus={() => setFocused(true)}
+        onFocus={(e) => {
+          setFocused(true);
+          if (selectAllOnFocus) e.currentTarget.select();
+        }}
         onBlur={() => {
           setFocused(false);
           onBlurValidate?.();

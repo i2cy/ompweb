@@ -5,6 +5,8 @@ import { ChevronDown, Layers } from "lucide-react";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
 import type { ActivityPiece, TranscriptRow } from "@/lib/chat-transcript-plan";
+import { formatTokens } from "@/lib/subagent-format";
+import { formatTurnDuration, summarizeTurnStats, type TurnStats } from "@/lib/turn-stats";
 
 /** Renders one committed message, optionally as a partial/overridden view under its own key prefix. */
 export type RenderMessage = (idx: number, options?: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; sourceBlockIndices?: number[] }) => ReactNode;
@@ -32,11 +34,25 @@ function withAssistantBlocks(
   return next;
 }
 
-function ProcessDetailsGroup({ messageCount, toolCallCount, children }: { messageCount: number; toolCallCount: number; children: () => ReactNode }) {
+function ProcessDetailsGroup({ messageCount, toolCallCount, turnStats, children }: { messageCount: number; toolCallCount: number; turnStats?: TurnStats | null; children: () => ReactNode }) {
   const { t, tn } = useI18n();
   const [expanded, setExpanded] = useState(false);
-  const parts = [t("chatWindow.processDetails"), tn("chatWindow.messageCount", messageCount)];
+  // A finished turn folds to one summary row ("Completed N steps · M tool
+  // calls"); the final reply stays expanded above it. Live turns stay flat.
+  const parts = [tn("chatWindow.completedSteps", messageCount)];
   if (toolCallCount > 0) parts.push(tn("chatWindow.toolCallCount", toolCallCount));
+  // First slice of #392: the turn's duration and token totals ride on the
+  // same summary line. Either part is omitted when its data is unavailable,
+  // so a missing timestamp or missing usage never renders as zero.
+  const duration = formatTurnDuration(turnStats?.durationMs ?? null);
+  if (duration) parts.push(duration);
+  if (turnStats && turnStats.inputTokens !== null) {
+    parts.push(t("chatWindow.turnTokens", {
+      input: formatTokens(turnStats.inputTokens) ?? "0",
+      output: formatTokens(turnStats.outputTokens ?? 0) ?? "0",
+      cached: formatTokens(turnStats.cacheReadTokens ?? 0) ?? "0",
+    }));
+  }
 
   return (
     <div style={{ marginBottom: 4 }}>
@@ -106,6 +122,10 @@ export function renderTranscriptGroupRow(row: TranscriptGroupRow, { messages, re
   }
 
   rendered.push(renderMessage(userIdx));
+  // Per-turn duration/token totals for the Process details summary (#392,
+  // first slice): one aggregate for the whole turn, shown on each of its
+  // folded rows.
+  const turnStats = summarizeTurnStats(messages, userIdx, endIdx);
   // A message split across segments keeps its navigation ref on the first one.
   const attached = new Set<number>();
   segments.forEach((segment, segmentIdx) => {
@@ -134,7 +154,7 @@ export function renderTranscriptGroupRow(row: TranscriptGroupRow, { messages, re
         key={`activity-${userIdx}-${segmentIdx}`}
         ref={refIdx === undefined ? undefined : (el) => { messageRefs.current[refIdx] = el; }}
       >
-        <ProcessDetailsGroup messageCount={segment.stepCount} toolCallCount={segment.toolCallCount}>
+        <ProcessDetailsGroup messageCount={segment.stepCount} toolCallCount={segment.toolCallCount} turnStats={turnStats}>
           {() => renderActivityPieces(messages, segment.pieces, renderMessage)}
         </ProcessDetailsGroup>
       </div>,

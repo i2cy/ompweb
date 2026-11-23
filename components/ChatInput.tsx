@@ -2,7 +2,7 @@
 
 import React, { useRef, useState, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, memo, KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, ClipboardPaste, CornerDownRight, ListChecks, Loader2, Mic, Paperclip, Plus, RotateCw, Shrink, Snail, Sparkles, Terminal, Wrench, X, Zap } from "lucide-react";
+import { ChevronDown, ClipboardPaste, CornerDownRight, ListChecks, Loader2, Maximize2, Mic, Paperclip, Plus, RotateCw, Shrink, Snail, Sparkles, Terminal, Wrench, X, Zap } from "lucide-react";
 import { getSubmitDuringRunBehavior, isWordCompletionEnabled } from "@/lib/composer-prefs";
 import type { BuiltinSlashCommandResult, CompactResultInfo, PromptSendOptions, PromptSubmissionResult, QueuedMessages, SlashCommandInfo } from "@/hooks/useAgentSession";
 import type { ActiveGoal, ActivePlan } from "@/lib/web-mode-state";
@@ -90,6 +90,7 @@ import { GhostMirror } from "@/components/GhostMirror";
 import { useI18n } from "@/lib/i18n";
 import { selectableThinkingLevels, DEFAULT_THINKING_LEVELS } from "@/lib/thinking-levels";
 import type { ToolPreset } from "@/lib/tool-presets";
+import { getToolPresetToolCount } from "@/lib/tool-presets";
 
 function ThinkingGlyph({ level }: { level: string }) {
   if (!DEFAULT_THINKING_LEVELS.includes(level)) return null;
@@ -221,6 +222,13 @@ interface Props {
   /** Browser-side tool preset, applied when spawning NEW sessions. */
   toolPreset?: ToolPreset;
   onToolPresetChange?: (preset: ToolPreset) => void;
+  /** Tool preset the current session was spawned with (#356 item 2): null
+   * when unknown — a session from before this was recorded, or from
+   * another browser or process. The badge then shows the preset for new
+   * sessions instead, and no banner is shown. */
+  sessionToolPreset?: ToolPreset | null;
+  /** True for a brand-new chat: the preset shown is the one the next spawn will use. */
+  isNewSession?: boolean;
   /** Display name for the current model when the catalog does not know it. */
   modelNameOverride?: string | null;
   retryInfo?: { attempt: number; maxAttempts: number; delayMs?: number; startedAt?: number; errorMessage?: string } | null;
@@ -366,7 +374,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   onSend, onPredictWord, onPredictWordFeedback, onAbort, onSteer, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelsLoading, onModelChange, fastModeEnabled, fastModeActive, usageLimit, fastModeSupported, onFastModeChange, slowModeSupported, slowModeEnabled, slowModeScope, onSlowModeChange,
   onAbortCompaction, isCompacting, compactResult,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap, modelNameOverride,
-  toolPreset, onToolPresetChange,
+  toolPreset, onToolPresetChange, sessionToolPreset, isNewSession,
   retryInfo, queuedMessages, inputHistory = [], onAbortRetry,
   slashCommands, slashCommandsLoading, onLoadSlashCommands,
   onBuiltinCommand,
@@ -457,6 +465,9 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   const contextContainer = isMobile ? sessionInfoContainer : composerContextContainer;
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const [plusExpanded, setPlusExpanded] = useState<"tools" | "advisor" | null>(null);
+  // Full-screen editing surface for long prompts; shares the composer's draft
+  // value, so closing it (or sending from it) keeps the same text.
+  const [editorFullscreen, setEditorFullscreen] = useState(false);
   const [modelSearchQuery, setModelSearchQuery] = useState("");
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>(() => (
     draftKey ? draftImagesToAttachedImages(getDraft(draftKey)?.images) : []
@@ -2281,6 +2292,15 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         t("chatInput.compactContext"),
       ].filter(Boolean).join(" · ")
     : t("chatInput.compactContext");
+  // The session's active toolset (#356 item 2): what this session was spawned
+  // with when known, else the preset a new session would spawn with. A
+  // restricted toolset is loud: a badge by the context gauge, and a persistent
+  // banner while the session is known to run restricted.
+  const activeToolPreset = sessionToolPreset ?? toolPreset ?? "full";
+  const toolPresetKnown = sessionToolPreset != null || isNewSession === true;
+  const activeToolCount = getToolPresetToolCount(activeToolPreset);
+  const toolsetBadgeLabel = `tools: ${activeToolPreset}${activeToolCount === null ? "" : ` (${activeToolCount})`}`;
+  const restrictedToolPreset = toolPresetKnown && activeToolPreset !== "full" ? activeToolPreset : null;
   const thinkingDisplayLabel = (() => {
     const lvl = thinkingLevel ?? "auto";
     if (lvl === "auto" || !thinkingLevelMap) return lvl;
@@ -3208,6 +3228,51 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             )}
           </div>
         )}
+        {/* Restricted toolset banner (#356 item 2): persistent while this
+            session is known to run restricted. Changing the preset only
+            affects new sessions (see the toolPresetNotice); this session
+            keeps its tools, so the banner stays until a new session starts. */}
+        {restrictedToolPreset && onToolPresetChange && (
+          <div
+            role="status"
+            style={{
+              border: "1px solid var(--status-warning)",
+              borderBottom: "none",
+              borderRadius: "var(--radius-card) var(--radius-card) 0 0",
+              background: "color-mix(in srgb, var(--status-warning) 12%, var(--bg-panel))",
+              padding: "8px 14px",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              fontSize: 12,
+              color: "var(--text)",
+            }}
+          >
+            <span style={{ flex: 1, minWidth: 0 }}>
+              {restrictedToolPreset === "none"
+                ? t("chatInput.restrictedToolsBannerNone")
+                : t("chatInput.restrictedToolsBanner", { count: getToolPresetToolCount(restrictedToolPreset) ?? 0 })}
+            </span>
+            <button
+              type="button"
+              onClick={() => onToolPresetChange("full")}
+              style={{
+                flexShrink: 0,
+                height: 26,
+                padding: "0 10px",
+                background: "var(--bg-subtle)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius-control)",
+                color: "var(--text)",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+            >
+              {t("chatInput.restoreFullTools")}
+            </button>
+          </div>
+        )}
         {/* Live agent status bar — attached to composer's top edge */}
         {statusText && (
           <div
@@ -3794,6 +3859,42 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               </span>
             )}
 
+            {/* Active toolset badge (#356 item 2): what this session runs
+                with, next to the model/context gauge. Select it to change
+                the preset (applies to new sessions). */}
+            {onToolPresetChange && (
+              <button
+                type="button"
+                onClick={() => { setPlusMenuOpen(true); setPlusExpanded("tools"); }}
+                title={toolPresetKnown
+                  ? t("chatInput.toolsetBadgeTitle", { preset: activeToolPreset })
+                  : t("chatInput.toolsetBadgeTitleUnknown", { preset: activeToolPreset })}
+                aria-label={toolPresetKnown
+                  ? t("chatInput.toolsetBadgeTitle", { preset: activeToolPreset })
+                  : t("chatInput.toolsetBadgeTitleUnknown", { preset: activeToolPreset })}
+                className="ui-focus-ring"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  height: 28,
+                  padding: "0 8px",
+                  flexShrink: 0,
+                  background: restrictedToolPreset ? "color-mix(in srgb, var(--status-warning) 12%, transparent)" : "none",
+                  border: restrictedToolPreset ? "1px solid var(--status-warning)" : "1px solid var(--border)",
+                  borderRadius: 7,
+                  color: restrictedToolPreset ? "var(--status-warning)" : "var(--text-muted)",
+                  cursor: "pointer",
+                  fontSize: 11.5,
+                  fontFamily: "var(--font-mono)",
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {toolsetBadgeLabel}
+              </button>
+            )}
+
             {/* Desktop keeps the control in the composer; mobile uses the header mount. */}
             {onCompact && (
               <div ref={setComposerContextContainer} style={{ display: isMobile ? "none" : undefined, flexShrink: 0 }} />
@@ -3965,6 +4066,27 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
                 <Mic size={14} strokeWidth={1.8} aria-hidden="true" />
               </button>
             )}
+            {/* Full-screen editor for long prompts */}
+            <button
+              type="button"
+              onClick={() => setEditorFullscreen(true)}
+              title={t("chatInput.expandEditor")}
+              aria-label={t("chatInput.expandEditor")}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: 28, height: 28, padding: 0,
+                background: "none",
+                border: "none",
+                borderRadius: 7,
+                color: "var(--text-muted)",
+                cursor: "pointer",
+                transition: "background var(--dur-fast) var(--ease-out-warm), color var(--dur-fast) var(--ease-out-warm)",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
+            >
+              <Maximize2 size={14} strokeWidth={1.8} aria-hidden="true" />
+            </button>
             {/* Primary action: Send (idle) / Steer or Queue (typed while running, per Settings) / Stop (running) */}
             {primaryActionQueuesMessage ? (
               <button
@@ -4064,6 +4186,86 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
 
 
       </div>
+      {editorFullscreen && createPortal(
+        <div
+          role="dialog"
+          aria-label={t("chatInput.fullscreenEditor")}
+          aria-modal="true"
+          style={{
+            position: "fixed", inset: 0, zIndex: 100,
+            display: "flex", flexDirection: "column",
+            background: "var(--bg)", padding: "16px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{t("chatInput.fullscreenEditor")}</span>
+            <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{t("chatInput.fullscreenEditorHint")}</span>
+            <button
+              type="button"
+              onClick={() => setEditorFullscreen(false)}
+              title={t("chatInput.doneEditing")}
+              aria-label={t("chatInput.doneEditing")}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: 32, height: 32, padding: 0,
+                background: "var(--bg-panel)", border: "1px solid var(--border)",
+                borderRadius: 8, color: "var(--text)", cursor: "pointer",
+                fontSize: 13, fontWeight: 600,
+              }}
+            >
+              <X size={14} strokeWidth={1.8} aria-hidden="true" />
+            </button>
+          </div>
+          <textarea
+            autoFocus
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") { e.stopPropagation(); setEditorFullscreen(false); }
+              else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); setEditorFullscreen(false); void handleSend(); }
+            }}
+            placeholder={t("chatInput.placeholder")}
+            aria-label={t("chatInput.fullscreenEditor")}
+            style={{
+              flex: 1, minHeight: 0, width: "100%",
+              background: "var(--bg-panel)",
+              border: "1px solid var(--border)", borderRadius: "var(--radius-card)",
+              outline: "none", resize: "none",
+              color: "var(--text)",
+              fontSize: "var(--chat-user-font-size)",
+              lineHeight: "var(--chat-line-height)",
+              fontFamily: "inherit",
+              padding: "12px 14px",
+            }}
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+            <button
+              type="button"
+              onClick={() => setEditorFullscreen(false)}
+              style={{
+                display: "flex", alignItems: "center", height: 32, padding: "0 14px",
+                background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 8,
+                color: "var(--text)", cursor: "pointer", fontSize: 13, fontWeight: 600,
+              }}
+            >
+              {t("chatInput.doneEditing")}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setEditorFullscreen(false); void handleSend(); }}
+              disabled={submissionBlocked || !(value.trim() || hasAttachments)}
+              style={{
+                display: "flex", alignItems: "center", height: 32, padding: "0 14px",
+                background: "var(--accent-strong)", border: "none", borderRadius: 8,
+                color: "var(--on-accent)", cursor: "pointer", fontSize: 13, fontWeight: 600,
+              }}
+            >
+              {t("chatInput.send")}
+            </button>
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }));

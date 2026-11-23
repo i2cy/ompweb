@@ -37,8 +37,8 @@ import { displayMessage } from "@/lib/message-delta";
 import { looksLikeRunningTurn } from "@/lib/chat-transcript-plan";
 import { createReconcileGuard, type ReconcileGuard } from "@/lib/reconcile-guard";
 import type { BashResultInfo, ClientMessageStatus } from "@/lib/pi-types";
-import { getToolNamesForPreset, type ToolPreset } from "@/lib/tool-presets";
-import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
+import { getPresetForToolNames, getToolNamesForPreset, type ToolPreset } from "@/lib/tool-presets";
+import { getPreferredToolPreset, getSessionToolPreset, setPreferredToolPreset, setSessionToolPreset } from "@/lib/tool-preset-preference";
 import { toast } from "@/components/ui/toast";
 import { expandWebSlashCommand } from "@/lib/web-slash-commands";
 import { validateOutgoingPrompt } from "@/lib/image-attachments";
@@ -235,7 +235,10 @@ export interface UseAgentSessionOptions {
   /** Frozen ensure_session configuration retained by the existing navigation view. */
   newSessionInitialization?: string;
   onNewSessionInitialization?: (body: string) => void;
-  advisorEnabled?: boolean;
+  /** Global omp default (`advisor.enabled` in settings): brand-new chats start
+   *  with this until the user toggles the per-chat Advisor switch. Existing
+   *  sessions keep their own stored choice. */
+  advisorDefault?: boolean;
   onAgentEnd?: () => void;
   onSessionCreated?: (session: SessionInfo) => void;
   onSessionForked?: (newSessionId: string) => void;
@@ -322,7 +325,7 @@ function reconcileConfirmedLocalOutbox(sessionId: string, localEntries: LocalOut
 
 export function useAgentSession(opts: UseAgentSessionOptions) {
   const {
-    session, newSessionCwd, newSessionHostId, newSessionCreationId, newSessionPoolId, newSessionProjectId, newSessionInitialization, onNewSessionInitialization, onAgentEnd, onSessionCreated, onSessionForked, onSessionMoved,
+    session, newSessionCwd, newSessionHostId, newSessionCreationId, newSessionPoolId, newSessionProjectId, newSessionInitialization, onNewSessionInitialization, advisorDefault, onAgentEnd, onSessionCreated, onSessionForked, onSessionMoved,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsPanelOpen,
     onOpenFile, onOpenUrl,
   } = opts;
@@ -451,6 +454,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // to avoid a server/client mismatch when the user stored a different preset.
   const [toolPreset, setToolPreset] = useState<ToolPreset>("full");
   useEffect(() => { setToolPreset(getPreferredToolPreset()); }, []);
+  // The preset the current session was spawned with (#356 item 2): null while
+  // the chat is new (nothing spawned yet) or the session's spawn was never
+  // recorded in this browser. A running session keeps its tools when the
+  // preference changes, so this never follows toolPreset.
+  const [sessionToolPreset, setSessionToolPresetState] = useState<ToolPreset | null>(null);
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelOption>("auto");
   const [fastModeEnabled, setFastModeEnabled] = useState(false);
   const [fastModeActive, setFastModeActive] = useState<boolean | undefined>(undefined);
@@ -585,9 +593,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [activeGoal, setActiveGoal] = useState<ActiveGoal | null>(null);
   const [activePlan, setActivePlan] = useState<ActivePlan | null>(null);
   const [advisorActiveAt, setAdvisorActiveAt] = useState(0);
-  // Advisor is a per-chat toggle (composer Sparkles + /advisor command), not a
-  // global setting: each session remembers its own choice in localStorage.
-  const [advisorEnabled, setAdvisorEnabled] = useState(false);
+  // Advisor is a per-chat toggle (composer Sparkles + /advisor command): each
+  // session remembers its own choice in localStorage. Brand-new chats start
+  // from the global `advisor.enabled` default until the user toggles it.
+  const [advisorEnabled, setAdvisorEnabled] = useState(advisorDefault ?? false);
+  // A toggle flipped on a brand-new chat (no id yet, so nothing persisted)
+  // must survive the global default arriving late; the load effect below
+  // only applies the default while this is false.
+  const advisorTouchedForNewRef = useRef(false);
   const activeSubagentCount = subagents.filter((subagent) => subagent.source !== "history" && subagent.status === "started").length;
 
   const eventSourceRef = useRef<EventStream | null>(null);
@@ -937,13 +950,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     return null;
   }, [todoPhases]);
   // Load the per-session advisor choice on session switch; brand-new chats
-  // start disabled until the user toggles the composer icon.
+  // start from the global default until the user toggles the composer icon.
   useEffect(() => {
     const sid = session?.id;
     if (!sid) {
-      setAdvisorEnabled(false);
+      setAdvisorEnabled((prev) => (advisorTouchedForNewRef.current ? prev : (advisorDefault ?? false)));
+      setSessionToolPresetState(null);
       return;
     }
+    advisorTouchedForNewRef.current = false;
     let stored = false;
     try {
       stored = localStorage.getItem(`omp-advisor-enabled:${sid}`) === "true";
@@ -954,12 +969,17 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // The spawn registry must match before any command POST can lazily start
     // the omp process; localStorage alone would leave resumed sessions dark.
     setSessionAdvisorSpawn(sid, stored);
-  }, [session?.id]);
+    // The preset this session was spawned with, if this browser recorded it.
+    setSessionToolPresetState(getSessionToolPreset(sid));
+  }, [session?.id, advisorDefault]);
 
   const handleAdvisorChange = useCallback((enabled: boolean) => {
     setAdvisorEnabled(enabled);
     const sid = sessionIdRef.current;
-    if (!sid) return;
+    if (!sid) {
+      advisorTouchedForNewRef.current = true;
+      return;
+    }
     setSessionAdvisorSpawn(sid, enabled);
     try {
       localStorage.setItem(`omp-advisor-enabled:${sid}`, String(enabled));
@@ -1398,6 +1418,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         } catch {
           // Best-effort: the spawned process already has --advisor.
         }
+      }
+      // Record the preset this spawn used, so the badge and banner can show
+      // the session's actual toolset (#356 item 2). A pooled creation reuses
+      // its original body's toolNames, which may differ from the current
+      // preference, so read the effective body.
+      const spawnedToolNames = pooled
+        ? (JSON.parse(creationBodyRef.current!.json) as { toolNames?: string[] }).toolNames
+        : request.toolNames;
+      const spawnedPreset = getPresetForToolNames(spawnedToolNames);
+      if (spawnedPreset !== null) {
+        setSessionToolPreset(realId, spawnedPreset);
+        setSessionToolPresetState(spawnedPreset);
       }
       // A prompt or side question that created this runtime attaches its own stream,
       // which would only replace an observer attached here.
@@ -3933,6 +3965,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             // In-memory registry still applies for this page load.
           }
         }
+        // Same for the spawn toolset: the fork keeps the parent's tools.
+        if (sessionToolPreset) setSessionToolPreset(newSessionId, sessionToolPreset);
         onSessionForked?.(newSessionId);
       }
     } catch (e) {
@@ -3941,7 +3975,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       forkInFlightRef.current = false;
       setForkingEntryId(null);
     }
-  }, [advisorEnabled, onSessionForked]);
+  }, [advisorEnabled, sessionToolPreset, onSessionForked]);
 
   const handleLeafChange = useCallback(async (leafId: string | null) => {
     if (bashRunningRef.current || agentRunningRef.current || editInFlightRef.current) return;
@@ -4916,7 +4950,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   return {
     // State
     data, loading, error, activeLeafId, messages, entryIds, showPreCompactionHistory, streamState,
-    agentRunning, modelNames, modelList, modelsLoading, modelError, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel, fastModeEnabled, fastModeActive, slowModeSupported, slowModeEnabled, slowModeScope, usageLimit, autoRetryEnabled, interruptMode, autoCompactionEnabled, steeringMode, followUpMode,
+    agentRunning, modelNames, modelList, modelsLoading, modelError, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, sessionToolPreset, thinkingLevel, fastModeEnabled, fastModeActive, slowModeSupported, slowModeEnabled, slowModeScope, usageLimit, autoRetryEnabled, interruptMode, autoCompactionEnabled, steeringMode, followUpMode,
     liveModelMeta,
     retryInfo, contextUsage, systemPrompt, forkingEntryId, editingEntryId,
     isCompacting, compactError, compactResult, tokensPerSecond, currentModel, displayModel, isAutoModelSelection: !displayModel, sessionStats, agentPhase,

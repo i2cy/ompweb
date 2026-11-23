@@ -4,6 +4,7 @@ import * as agentIdBashOutput from "@/app/api/agent/[id]/bash-output/route";
 import * as agentId from "@/app/api/agent/[id]/route";
 import * as agentNew from "@/app/api/agent/new/route";
 import * as agents from "@/app/api/agents/route";
+import * as appInfo from "@/app/api/app-info/route";
 import * as appUpdateNotes from "@/app/api/app-update/notes/route";
 import * as appUpdate from "@/app/api/app-update/route";
 import * as authAccountsProvider from "@/app/api/auth/accounts/[provider]/route";
@@ -12,6 +13,8 @@ import * as authApiKeyProvider from "@/app/api/auth/api-key/[provider]/route";
 import * as authLoginProvider from "@/app/api/auth/login/[provider]/route";
 import * as authProviders from "@/app/api/auth/providers/route";
 import * as cwdBrowse from "@/app/api/cwd/browse/route";
+import * as cwdPick from "@/app/api/cwd/pick/route";
+import * as cwdPicker from "@/app/api/cwd/picker/route";
 import * as cwdValidate from "@/app/api/cwd/validate/route";
 import * as defaultCwd from "@/app/api/default-cwd/route";
 import * as events from "@/app/api/events/route";
@@ -39,6 +42,7 @@ import * as modelsConfigCatalog from "@/app/api/models-config/catalog/route";
 import * as modelsConfig from "@/app/api/models-config/route";
 import * as modelsConfigTest from "@/app/api/models-config/test/route";
 import * as models from "@/app/api/models/route";
+import * as notificationsAnswer from "@/app/api/notifications/answer/route";
 import * as notificationsDevices from "@/app/api/notifications/devices/route";
 import * as notificationsHistory from "@/app/api/notifications/history/route";
 import * as notificationsPresence from "@/app/api/notifications/presence/route";
@@ -96,9 +100,10 @@ type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 // its socket; see handle() in server/app.ts.
 // upgrade: makes the request a WebSocket (server.upgrade), a host link or a browser link; a handler that upgraded
 // returns undefined.
+// localPeer: the connection came from this machine's loopback interface. Taken from the socket, never from Host.
 export type RouteHandler = (
   request: Request,
-  context: { params: Promise<never>; disableIdleTimeout: () => void; upgrade: (data: ServerSocketData) => boolean },
+  context: { params: Promise<never>; disableIdleTimeout: () => void; upgrade: (data: ServerSocketData) => boolean; localPeer: boolean },
 ) => Response | undefined | Promise<Response | undefined>;
 export type RouteModule = Partial<Record<Method, RouteHandler>>;
 
@@ -108,6 +113,7 @@ export const ROUTE_MODULES: Record<string, RouteModule> = {
   "agent/[id]": agentId,
   "agent/new": agentNew,
   "agents": agents,
+  "app-info": appInfo,
   "app-update/notes": appUpdateNotes,
   "app-update": appUpdate,
   "auth/accounts/[provider]": authAccountsProvider,
@@ -116,6 +122,8 @@ export const ROUTE_MODULES: Record<string, RouteModule> = {
   "auth/login/[provider]": authLoginProvider,
   "auth/providers": authProviders,
   "cwd/browse": cwdBrowse,
+  "cwd/pick": cwdPick,
+  "cwd/picker": cwdPicker,
   "cwd/validate": cwdValidate,
   "default-cwd": defaultCwd,
   "events": events,
@@ -143,6 +151,7 @@ export const ROUTE_MODULES: Record<string, RouteModule> = {
   "models-config": modelsConfig,
   "models-config/test": modelsConfigTest,
   "models": models,
+  "notifications/answer": notificationsAnswer,
   "notifications/devices": notificationsDevices,
   "notifications/history": notificationsHistory,
   "notifications/presence": notificationsPresence,
@@ -207,6 +216,7 @@ export async function dispatch(
   params: Record<string, string | string[]>,
   disableIdleTimeout: () => void = () => {},
   upgrade: (data: ServerSocketData) => boolean = () => false,
+  localPeer = false,
 ): Promise<Response | undefined> {
   const handler = mod[request.method as Method] ?? (request.method === "HEAD" ? mod.GET : undefined);
   if (!handler) {
@@ -216,7 +226,7 @@ export async function dispatch(
     return new Response(null, { status: 204, headers: { allow } });
   }
   try {
-    return await handler(request, { params: Promise.resolve(params) as Promise<never>, disableIdleTimeout, upgrade });
+    return await handler(request, { params: Promise.resolve(params) as Promise<never>, disableIdleTimeout, upgrade, localPeer });
   } catch (error) {
     console.error(error);
     return Response.json({ error: "Internal Server Error" }, { status: 500 });

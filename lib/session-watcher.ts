@@ -1,13 +1,13 @@
 import { watch, type FSWatcher } from "fs";
 import { join } from "path";
 import {
-  getAgentDir,
   invalidateSessionEntriesCache,
   invalidateSessionListCache,
   invalidateSessionListMeta,
   listAllSessions,
   resolveSessionIdByPath,
 } from "./session-reader";
+import { getSessionsDir } from "./omp/paths";
 import { invalidateLocalSessionLists } from "./hosts/session-index";
 
 // omp owns the writes to a session's JSONL. ompweb streams RPC events only for
@@ -100,7 +100,12 @@ function scheduleRetry(): void {
 
 function ensureWatcher(): void {
   if (watcher || retryTimer) return;
-  const sessionsDir = join(getAgentDir(), "sessions");
+  // Watch the directory the session lister actually reads. Deriving this
+  // from getAgentDir() broke the XDG layout ($XDG_DATA_HOME/omp/sessions):
+  // the watcher then watched ~/.omp/agent/sessions, so external session
+  // changes never reached the sidebar for XDG users (or it retried a
+  // nonexistent directory forever).
+  const sessionsDir = getSessionsDir();
   try {
     watcher = watch(sessionsDir, { recursive: true, persistent: false }, (_event, filename) => {
       if (!filename) {

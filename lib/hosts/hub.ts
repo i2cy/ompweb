@@ -411,6 +411,16 @@ function sendDown(link: Link, body: Unsequenced<DownMessage>, key: string): void
   )) throw new HostOpError(426, "host_upgrade_required", "Update this host before using its application protocol");
   const line = encodeQueued(body);
   const size = Buffer.byteLength(line);
+  // The downlink backlog is bounded (spec D6): a command that would take the
+  // queued plus unacknowledged bytes past downlinkBacklogBytes is rejected
+  // before anything is recorded, so its caller hears it at once instead of
+  // at the op timeout, and it is never delivered later. Control messages
+  // (kill, interest, host_tools) are small and keep liveness and cleanup
+  // working on a saturated link; they bypass the cap.
+  if ((body.type === "req" || body.type === "stdin")
+    && link.outboxBytes + link.sender.queuedBytes + size > LINK_LIMITS.downlinkBacklogBytes) {
+    throw new LinkLimitError(`downlink backlog exceeds ${LINK_LIMITS.downlinkBacklogBytes} bytes`);
+  }
   // Ahead of it: what is queued or unacked on this link (counters, no scan); fairness may send it before some of that.
   const sample = { at: Date.now(), t: performance.now(), bytes: size, bytesAhead: link.outboxBytes + link.sender.queuedBytes, session: sessionOf(link, body) };
   link.sender.push(key, { line, size, sample });
@@ -1003,6 +1013,9 @@ function applyUp(link: Link, message: UpMessage | UnknownMessage, whole?: UpMess
       return link.channels.get(message.ch)?.deliverLine(message.line);
     case "stderr":
       return link.channels.get(message.ch)?.deliverStderr(message.chunk);
+    case "omp_version":
+      link.ompVersion = message.ompVersion;
+      return setStatus(link, link.status === "omp-missing" ? "online" : link.status);
     case "resync":
       return link.channels.get(message.ch)?.deliverResync();
     case "exit": {
@@ -1112,8 +1125,19 @@ function validResult(op: keyof SessionOps, result: unknown, args: unknown[]): bo
         && typeof value.baseCommit === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value.baseCommit);
     case "exportSession":
       return isRecord(value) && typeof value.html === "string" && typeof value.fileName === "string";
-    case "readSession":
-      return isRecord(value) && isRecord(value.info) && isRecord(value.context);
+    case "readSession": {
+      const options = isRecord(args[1]) ? args[1] : {};
+      if (!isRecord(value) || !isRecord(value.info)) return false;
+      // A daemon that predates `?meta=1` ignores the option and answers the
+      // full transcript; the route derives the navigation shape from it.
+      if (isRecord(value.context)) return true;
+      if (options.meta !== true || value.context !== null) return false;
+      // Nothing to derive the navigation fields from: a null-context result
+      // must carry the tree, leaf and branch metadata itself (model may be null).
+      return Array.isArray(value.tree) && nullableString(value.leafId)
+        && (value.info.model === null || isRecord(value.info.model))
+        && typeof value.info.thinkingLevel === "string";
+    }
     case "readContext": {
       // The context route reads a different shape per mode.
       const options = isRecord(args[2]) ? args[2] : {};
@@ -2106,6 +2130,14 @@ export function lastUplinkAt(hostId: string): number | null {
 /** Link telemetry is internal scheduling state; reading it never creates a link or broadcasts a change. */
 export function getHostCapacity(hostId: string): CapacitySnapshot | null {
   return hub().links.get(hostId)?.capacity ?? null;
+}
+
+/** Queued plus unacknowledged downlink bytes on `hostId`'s link, or null
+ * when it has no link. Tests use it to place a backlog exactly on the cap. */
+export function getHostDownlinkBacklog(hostId: string): { queuedBytes: number; outboxBytes: number } | null {
+  const link = hub().links.get(hostId);
+  if (!link) return null;
+  return { queuedBytes: link.sender.queuedBytes, outboxBytes: link.outboxBytes };
 }
 
 export function getHostLinkProtocol(hostId: string): number | null {

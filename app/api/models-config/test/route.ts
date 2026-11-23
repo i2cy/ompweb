@@ -2,10 +2,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
-  type ModelDefinition,
-  type ProviderConfig,
+  readModelsConfigFile,
+  restoreModelsConfigApiKeys,
   serializeModelsConfig,
   validateModelsConfig,
+  type ModelDefinition,
+  type ProviderConfig,
 } from "@/lib/omp/models-config";
 import { type OmpModel, runIsolatedUtilityCommand } from "@/lib/omp/rpc-utility";
 import { isRecord } from "@/lib/type-guards";
@@ -31,12 +33,17 @@ export async function POST(req: Request) {
     const modelId = typeof body.model.id === "string" ? body.model.id.trim() : "";
     if (!modelId) return Response.json({ ok: false, error: "Model ID is required", code: "model_id_required" }, { status: 400 });
 
+    // The editor shows masked placeholders for stored credentials; testing a
+    // provider without retyping its key must still test the real ones.
+    const restored = restoreModelsConfigApiKeys(
+      { providers: { [providerName]: { ...(body.provider as ProviderConfig), models: [{ ...(body.model as ModelDefinition), id: modelId }] } } },
+      readModelsConfigFile().config,
+    );
+    const restoredProvider = restored.providers?.[providerName];
+    if (!restoredProvider) return Response.json({ ok: false, error: "provider is required", code: "provider_required" }, { status: 400 });
     const config = {
       providers: {
-        [providerName]: {
-          ...(body.provider as ProviderConfig),
-          models: [{ ...(body.model as ModelDefinition), id: modelId }],
-        },
+        [providerName]: restoredProvider,
       },
     };
     try {
