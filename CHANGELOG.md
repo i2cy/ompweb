@@ -8,6 +8,7 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 
 ### Fixed
 
+- **Keep session tabs and the complete composer inside the chat viewport.** The chat now shares the remaining height with its tab strip instead of adding another full-height child, and the outer container clips programmatic scrolling so scroll following and input focus cannot move tabs offscreen or hide model and send controls.
 - **Retry opening the browser outbox after a transient IndexedDB failure.** A failed initial `indexedDB.open()` no longer leaves the shared worker holding a null database promise forever; the next add reopens it, with concurrent tabs sharing the same recovery attempt and existing delivery/order guarantees unchanged.
 - **Name browser outbox storage failures.** IndexedDB open, read and write failures now preserve the originating exception name and message in the send error, making quota, schema, permission and payload failures distinguishable without exposing message contents.
 - **Keep Extensions & Tools navigation and plugin saves visible.** Skills and plugin detail panels retain the shared section header and Skills/Plugins navigation, horizontal settings tabs bring the active item into view, and the plugin Save action uses a fixed, accent-styled operation bar outside nested scroll containers instead of an unstyled button below the form.

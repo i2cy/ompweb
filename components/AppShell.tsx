@@ -2699,8 +2699,9 @@ export function AppShell({ appName }: { appName: string }) {
 
         </div>
 
-        {/* Chat content */}
-        <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+        {/* Chat content: the tab strip and chat share the remaining height;
+            clip prevents scrollIntoView/focus from moving the strip offscreen. */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "clip", position: "relative" }}>
           {openSessionTabs.length > 0 && (
             <SessionTabs
               tabs={openSessionTabs}
