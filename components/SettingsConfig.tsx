@@ -40,6 +40,22 @@ const SettingsTabLoading = () => {
   const { t } = useI18n();
   return <div role="status" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: "var(--text-sm)" }}>{t("settingsConfig.loadingSettings")}</div>;
 };
+
+function ExtensionsToolsHeader({ showSubTabs, onSelectTab }: { showSubTabs: boolean; onSelectTab: (tab: SettingsTab) => void }) {
+  const { t } = useI18n();
+  return (
+    <div style={{ marginBottom: 4 }}>
+      <h2 className="display-serif" style={{ fontSize: 22, fontWeight: 600, margin: 0, color: "var(--text)", letterSpacing: "-0.01em" }}>{t("settingsConfig.extensionsTools")}</h2>
+      <p className="settings-content-subtitle" style={{ margin: "4px 0 16px", fontSize: 13, color: "var(--text-muted)", lineHeight: 1.45 }}>{t("settingsConfig.extensionsToolsDesc")}</p>
+      {showSubTabs && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" className="settings-back ui-focus-ring" onClick={() => onSelectTab("skills")}>{t("skillsConfig.title")}</button>
+          <button type="button" className="settings-back ui-focus-ring" onClick={() => onSelectTab("plugins")}>{t("pluginsConfig.title")}</button>
+        </div>
+      )}
+    </div>
+  );
+}
 const ModelsConfig = dynamic(() => import("./ModelsConfig").then((module) => module.ModelsConfig), { loading: SettingsTabLoading });
 const SkillsConfig = dynamic(() => import("./SkillsConfig").then((module) => module.SkillsConfig), { loading: SettingsTabLoading });
 const PluginsConfig = dynamic(() => import("./PluginsConfig").then((module) => module.PluginsConfig), { loading: SettingsTabLoading });
@@ -1882,16 +1898,7 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
             {/* EXTENSIONS & TOOLS TAB (MCP, SKILLS, PLUGINS) */}
             {currentTab === "mcp" && (
               <div role="tabpanel" id="settings-panel-mcp" aria-labelledby="settings-tab-mcp" className="settings-panel-inner" style={{ display: currentTab === "mcp" ? "flex" : "none", width: "100%", maxWidth: 940, minHeight: 0, flexDirection: "column", padding: isMobile ? "16px 14px 32px" : "32px 24px 64px", gap: 16 }}>
-                <div style={{ marginBottom: 4 }}>
-                  <h2 className="display-serif" style={{ fontSize: 22, fontWeight: 600, margin: 0, color: "var(--text)", letterSpacing: "-0.01em" }}>{t("settingsConfig.extensionsTools")}</h2>
-                  <p className="settings-content-subtitle" style={{ margin: "4px 0 16px", fontSize: 13, color: "var(--text-muted)", lineHeight: 1.45 }}>{t("settingsConfig.extensionsToolsDesc")}</p>
-                  {cwd && (!remoteHost || cluster) && (
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      <button type="button" className="settings-back ui-focus-ring" onClick={() => handleSelectTab("skills")}>{t("skillsConfig.title")}</button>
-                      <button type="button" className="settings-back ui-focus-ring" onClick={() => handleSelectTab("plugins")}>{t("pluginsConfig.title")}</button>
-                    </div>
-                  )}
-                </div>
+                <ExtensionsToolsHeader showSubTabs={Boolean(cwd && (!remoteHost || cluster))} onSelectTab={handleSelectTab} />
                 {cwd && (!remoteHost || cluster) && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%" }}>
                     <NativeSetting searchId="load-project-mcp-servers" label={t("settingsConfig.loadProjectMcp")} description={t("settingsConfig.loadProjectMcpDesc")} scope="Native OMP">
@@ -1922,6 +1929,7 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
             {/* SKILLS SUB-PANEL CONTRACT MATCH */}
             {cwd && currentTab === "skills" && (
               <div role="tabpanel" id="settings-panel-skills" aria-labelledby="settings-tab-mcp" className="settings-panel-inner" style={{ display: currentTab === "skills" ? "flex" : "none", width: "100%", maxWidth: 940, minHeight: isMobile ? undefined : 600, flexDirection: "column", padding: isMobile ? "16px 14px 32px" : "32px 24px 64px" }}>
+                <ExtensionsToolsHeader showSubTabs={Boolean(cwd && (!remoteHost || cluster))} onSelectTab={handleSelectTab} />
                 {panelsUnavailable ? remoteUnavailable : <SkillsConfig embedded cwd={panelCwd} onClose={onClose} />}
               </div>
             )}
@@ -1929,6 +1937,7 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
             {/* PLUGINS SUB-PANEL CONTRACT MATCH */}
             {cwd && currentTab === "plugins" && (
               <div role="tabpanel" id="settings-panel-plugins" aria-labelledby="settings-tab-mcp" className="settings-panel-inner" style={{ display: currentTab === "plugins" ? "flex" : "none", width: "100%", maxWidth: 940, minHeight: isMobile ? undefined : 600, flexDirection: "column", padding: isMobile ? "16px 14px 32px" : "32px 24px 64px" }}>
+                <ExtensionsToolsHeader showSubTabs={Boolean(cwd && (!remoteHost || cluster))} onSelectTab={handleSelectTab} />
                 {panelsUnavailable ? remoteUnavailable : <PluginsConfig embedded cwd={panelCwd} sessionId={panelSessionId} onClose={onClose} onReloaded={onPluginsReloaded} />}
               </div>
             )}

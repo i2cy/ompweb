@@ -171,8 +171,12 @@ test("Extensions & Tools opens the Plugins subpanel without normalizing it back 
 
   view.rerender(createElement(SettingsConfig, { ...settingsProps, activeTab: "plugins", onSelectTab: (tab) => selections.push(tab) }));
   assert.ok(await screen.findByText("No plugins configured"));
+  assert.ok(await screen.findByRole("heading", { name: "Extensions & Tools" }));
+  assert.equal(screen.getAllByRole("tablist").length, 1);
   assert.equal(document.getElementById("settings-panel-plugins")?.getAttribute("aria-labelledby"), "settings-tab-mcp");
   assert.equal(screen.getByRole("tab", { name: /Extensions & Tools/ }).getAttribute("aria-selected"), "true");
+  await user.click(screen.getByRole("button", { name: "Skills" }));
+  assert.deepEqual(selections, ["plugins", "skills"]);
 });
 
 test("without a workspace the Plugins panel works at the user level: no cwd, global installs only", async (t) => {

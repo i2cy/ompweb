@@ -2,7 +2,7 @@
 
 import { useI18n } from "@/lib/i18n";
 import { BarChart3, Bell, Bot, Cable, Cpu, KeyRound, Network, RefreshCw, Settings2, ShieldCheck, Sparkles } from "lucide-react";
-import type { ComponentType, CSSProperties } from "react";
+import { useEffect, useRef, type ComponentType, type CSSProperties } from "react";
 
 export type SettingsTab =
   | "general"
@@ -62,6 +62,18 @@ export function SettingsTabs({
 }) {
   const { t } = useI18n();
   const currentActive = getNormalizedActive(active);
+  const horizontalNav = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (layout !== "horizontal") return;
+    const nav = horizontalNav.current;
+    const tab = document.getElementById(`settings-tab-${currentActive}`);
+    if (!nav || !tab) return;
+    const left = tab.offsetLeft;
+    const right = left + tab.offsetWidth;
+    if (left < nav.scrollLeft) nav.scrollLeft = left;
+    else if (right > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = right - nav.clientWidth;
+  }, [currentActive, layout]);
 
   const onKeyDown = (event: React.KeyboardEvent, index: number) => {
     const enabled = SETTINGS_CATEGORIES.filter((tab) => !(tab.needsWorkspace && !workspaceReady));
@@ -155,7 +167,7 @@ export function SettingsTabs({
   }
 
   return (
-    <nav className="settings-nav-horizontal" aria-label={t("settingsTabs.ariaLabel")} role="tablist" style={{ display: "flex", gap: 3, padding: "7px 12px", borderBottom: "1px solid var(--border)", background: "var(--bg-panel)", flexShrink: 0, overflowX: "auto" }}>
+    <nav ref={horizontalNav} className="settings-nav-horizontal" aria-label={t("settingsTabs.ariaLabel")} role="tablist" style={{ display: "flex", gap: 3, padding: "7px 12px", borderBottom: "1px solid var(--border)", background: "var(--bg-panel)", flexShrink: 0, overflowX: "auto" }}>
       {SETTINGS_CATEGORIES.map(({ id, label, description, Icon, needsWorkspace }, index) => {
         const labelKey = `settingsTabs.${id}.label`;
         const descKey = `settingsTabs.${id}.description`;

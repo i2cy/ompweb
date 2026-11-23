@@ -24,6 +24,36 @@ interface ActionState {
 type DraftValue = string | boolean;
 type Drafts = Record<string, DraftValue>;
 
+const settingsActionBarStyle: React.CSSProperties = {
+  position: "sticky",
+  top: 0,
+  zIndex: 4,
+  display: "flex",
+  gap: 8,
+  flexWrap: "wrap",
+  padding: "10px 0 12px",
+  background: "var(--bg)",
+  borderBottom: "1px solid var(--border)",
+};
+const primaryActionStyle: React.CSSProperties = {
+  minHeight: 36,
+  padding: "7px 16px",
+  border: "1px solid var(--accent-strong)",
+  borderRadius: "var(--radius-control)",
+  background: "var(--accent-strong)",
+  color: "var(--on-accent)",
+  fontSize: 12,
+  fontWeight: 700,
+  cursor: "pointer",
+};
+const secondaryActionStyle: React.CSSProperties = {
+  ...primaryActionStyle,
+  background: "var(--bg-panel)",
+  color: "var(--text-muted)",
+  border: "1px solid var(--border)",
+  fontWeight: 600,
+};
+
 function isSecretState(value: PluginSettingValue | PluginSecretState | undefined): value is PluginSecretState {
   return typeof value === "object" && value !== null && value.redacted === true;
 }
@@ -291,6 +321,17 @@ export function PluginSettingsForm({ pkg, cwd }: { pkg: PluginPackageInfo; cwd: 
         <p style={{ margin: "4px 0 0", fontSize: 11, lineHeight: 1.5, color: "var(--text-dim)" }}>{t("pluginsConfig.configurationHelp")}</p>
       </div>
 
+      {Object.keys(config.schema).length > 0 && (
+        <div style={settingsActionBarStyle}>
+          <button type="button" disabled={disabled} onClick={() => void saveOrValidate(false)} style={{ ...primaryActionStyle, opacity: disabled ? 0.6 : 1, cursor: disabled ? "not-allowed" : "pointer" }}>
+            {busy === "save" ? t("pluginsConfig.saving") : t("pluginsConfig.saveSettings")}
+          </button>
+          <button type="button" disabled={disabled} onClick={() => void saveOrValidate(true)} style={{ ...secondaryActionStyle, opacity: disabled ? 0.6 : 1, cursor: disabled ? "not-allowed" : "pointer" }}>
+            {busy === "validate" ? t("pluginsConfig.validating") : t("pluginsConfig.validateSettings")}
+          </button>
+        </div>
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         {Object.entries(config.schema).map(([key, schema]) => {
           const value = config.settings[key];
@@ -325,13 +366,6 @@ export function PluginSettingsForm({ pkg, cwd }: { pkg: PluginPackageInfo; cwd: 
           );
         })}
       </div>
-
-      {Object.keys(config.schema).length > 0 && (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button type="button" disabled={disabled} onClick={() => void saveOrValidate(false)}>{busy === "save" ? t("pluginsConfig.saving") : t("pluginsConfig.saveSettings")}</button>
-          <button type="button" disabled={disabled} onClick={() => void saveOrValidate(true)}>{busy === "validate" ? t("pluginsConfig.validating") : t("pluginsConfig.validateSettings")}</button>
-        </div>
-      )}
 
       {message && <div role="status" style={{ fontSize: 12, color: "var(--status-success)" }}>{message}</div>}
       {error && <div role="alert" style={{ fontSize: 12, color: "var(--status-error)", whiteSpace: "pre-wrap" }}>{error}</div>}
