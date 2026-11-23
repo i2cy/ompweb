@@ -1767,29 +1767,46 @@ const outboxDropping = new Set<string>();
 const outboxReadRetry = new Map<string, { timer: Timer | undefined; ms: number }>();
 /** The last read of the shared list failed: this worker's list may miss other workers' earlier entries. */
 let outboxPartial = false;
-const outboxDb = openOutboxDb();
+let outboxDb = openOutboxDb();
 /** The stored entries are loaded (and sent): every tab's outbox op waits for it, so none races them. */
 let outboxReady = outboxDb.then(loadOutbox);
 
-/** Retry a failed load on the next operation; concurrent tabs share that attempt too. */
+/** Retry a failed open or load on the next operation; concurrent tabs share that attempt too. */
 async function ensureOutboxReady(): Promise<boolean> {
   const pending = outboxReady;
   if (await pending) return true;
-  if (outboxReady === pending) outboxReady = outboxDb.then(loadOutbox);
+  if (outboxReady === pending) outboxReady = outboxDb.then((db) => {
+    if (db) return loadOutbox(db);
+    outboxDb = openOutboxDb();
+    return outboxDb.then(loadOutbox);
+  });
   return outboxReady;
+}
+
+let outboxStorageError = "IndexedDB write failed";
+function outboxErrorText(error: unknown): string {
+  if (isRecord(error) && typeof error.name === "string") return `${error.name}: ${String(error.message ?? "")}`;
+  return String(error ?? "Unknown IndexedDB error");
 }
 
 /** null where IndexedDB is missing or refuses: adds must fail without a durable store. */
 function openOutboxDb(): Promise<IDBDatabase | null> {
   return new Promise((resolve) => {
     const factory = scope.indexedDB;
-    if (!factory) return resolve(null);
+    if (!factory) {
+      outboxStorageError = "IndexedDB is unavailable";
+      return resolve(null);
+    }
     try {
       const request = factory.open(OUTBOX_DB, 1);
       request.onupgradeneeded = () => request.result.createObjectStore(OUTBOX_STORE, { keyPath: "id" });
       request.onsuccess = () => resolve(request.result);
-      request.onerror = () => resolve(null);
-    } catch {
+      request.onerror = () => {
+        outboxStorageError = outboxErrorText(request.error ?? "IndexedDB open failed");
+        resolve(null);
+      };
+    } catch (error) {
+      outboxStorageError = outboxErrorText(error);
       resolve(null);
     }
   });
@@ -1803,8 +1820,12 @@ function readOutbox(db: IDBDatabase | null): Promise<LocalOutboxEntry[] | null> 
       const transaction = db.transaction(OUTBOX_STORE);
       const request = transaction.objectStore(OUTBOX_STORE).getAll();
       transaction.oncomplete = () => resolve(request.result);
-      transaction.onerror = transaction.onabort = request.onerror = () => resolve(null);
-    } catch {
+      transaction.onerror = transaction.onabort = request.onerror = () => {
+        outboxStorageError = outboxErrorText(transaction.error ?? request.error ?? "IndexedDB read failed");
+        resolve(null);
+      };
+    } catch (error) {
+      outboxStorageError = outboxErrorText(error);
       resolve(null);
     }
   });
@@ -1819,7 +1840,10 @@ function readOutboxForSend(db: IDBDatabase | null): Promise<LocalOutboxEntry[] |
       const store = transaction.objectStore(OUTBOX_STORE);
       const request = store.getAll();
       transaction.oncomplete = () => resolve(entries);
-      transaction.onerror = transaction.onabort = request.onerror = () => resolve(null);
+      transaction.onerror = transaction.onabort = request.onerror = () => {
+        outboxStorageError = outboxErrorText(transaction.error ?? request.error ?? "IndexedDB send-read failed");
+        resolve(null);
+      };
       request.onsuccess = () => {
         entries = request.result as LocalOutboxEntry[];
         const byId = new Map(entries.map((entry) => [entry.id, entry] as const));
@@ -1834,7 +1858,8 @@ function readOutboxForSend(db: IDBDatabase | null): Promise<LocalOutboxEntry[] |
           store.put(normalized);
         }
       };
-    } catch {
+    } catch (error) {
+      outboxStorageError = outboxErrorText(error);
       resolve(null);
     }
   });
@@ -1857,9 +1882,13 @@ async function writeOutbox(change: (store: IDBObjectStore) => void): Promise<boo
     try {
       const transaction = db.transaction(OUTBOX_STORE, "readwrite");
       transaction.oncomplete = () => resolve(true);
-      transaction.onerror = transaction.onabort = () => resolve(false);
+      transaction.onerror = transaction.onabort = () => {
+        outboxStorageError = outboxErrorText(transaction.error ?? "IndexedDB write failed");
+        resolve(false);
+      };
       change(transaction.objectStore(OUTBOX_STORE));
-    } catch {
+    } catch (error) {
+      outboxStorageError = outboxErrorText(error);
       resolve(false);
     }
   });
@@ -1933,7 +1962,8 @@ function addOutbox(client: Client, n: number, entry: LocalOutboxEntry): void {
     if (!committed || invalidRetry) {
       post(client, {
         outboxAdded: n,
-        error: invalidRetry ? "This retry chain is invalid. Retry the original message instead." : "The message could not be saved to this browser. Send it again.",
+        error: invalidRetry ? "This retry chain is invalid. Retry the original message instead."
+          : `The message could not be saved to this browser. Send it again. (${outboxStorageError})`,
       });
       return;
     }

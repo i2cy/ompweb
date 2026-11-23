@@ -161,6 +161,20 @@ test("the system tab shows the notice next to the agent environment variables, w
   assert.equal(screen.queryByText(NOTICE), null);
 });
 
+test("Extensions & Tools opens the Plugins subpanel without normalizing it back to MCP", async (t) => {
+  recordRequests(t);
+  const selections = [];
+  const view = render(createElement(SettingsConfig, { ...settingsProps, activeTab: "mcp", onSelectTab: (tab) => selections.push(tab) }));
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Plugins" }));
+  assert.deepEqual(selections, ["plugins"]);
+
+  view.rerender(createElement(SettingsConfig, { ...settingsProps, activeTab: "plugins", onSelectTab: (tab) => selections.push(tab) }));
+  assert.ok(await screen.findByText("No plugins configured"));
+  assert.equal(document.getElementById("settings-panel-plugins")?.getAttribute("aria-labelledby"), "settings-tab-mcp");
+  assert.equal(screen.getByRole("tab", { name: /Extensions & Tools/ }).getAttribute("aria-selected"), "true");
+});
+
 test("without a workspace the Plugins panel works at the user level: no cwd, global installs only", async (t) => {
   const requests = recordRequests(t);
   render(createElement(PluginsConfig, { embedded: true, cwd: null, sessionId: null, onClose: noop }));

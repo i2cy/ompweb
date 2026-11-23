@@ -13,6 +13,7 @@ import { ConfirmDialog } from "@/components/ui/field";
 import { toast } from "@/components/ui/toast";
 import { Plus } from "lucide-react";
 import { SettingsTabs, type SettingsTab } from "./SettingsTabs";
+import { PluginSettingsForm } from "./PluginSettingsForm";
 import type { PluginPackageInfo, PluginsResponse } from "@/lib/api-types";
 
 function PluginsConfigSurface({ embedded, isMobile, onClose, children }: { embedded: boolean; isMobile: boolean; onClose: () => void; children: React.ReactNode }) {
@@ -585,6 +586,8 @@ function PackageDetail({
         </div>
         <ResourceList pkg={pkg} />
       </div>
+
+      <PluginSettingsForm pkg={pkg} cwd={cwd} />
 
       {actionMessage && (
         <div style={{ fontSize: 12, color: "var(--status-success)" }}>

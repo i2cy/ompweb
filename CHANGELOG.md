@@ -6,6 +6,15 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 
 ## [Unreleased]
 
+### Fixed
+
+- **Retry opening the browser outbox after a transient IndexedDB failure.** A failed initial `indexedDB.open()` no longer leaves the shared worker holding a null database promise forever; the next add reopens it, with concurrent tabs sharing the same recovery attempt and existing delivery/order guarantees unchanged.
+- **Name browser outbox storage failures.** IndexedDB open, read and write failures now preserve the originating exception name and message in the send error, making quota, schema, permission and payload failures distinguishable without exposing message contents.
+
+### Added
+
+- **Generic OMP plugin configuration.** Extensions & Tools → Plugins now renders installed manifest string, number, boolean and enum settings, validates and saves them through `omp plugin config`, keeps secrets write-only with explicit clearing, and runs only server-resolved `omp.actions`. The new authenticated `/api/plugin-config` endpoint redacts secret values and command errors, reuses workspace authorization, serializes Web writes by scope, and bounds action JSON results.
+
 ## [v0.7.3] - 2026-11-18
 
 ### Fixed

@@ -52,6 +52,58 @@ export interface SkillInfo {
 export type PluginScope = "global" | "project";
 export type PluginResourceKind = "extension" | "skill" | "prompt" | "theme";
 
+interface PluginSettingBase {
+  description?: string;
+  secret?: boolean;
+  env?: string;
+}
+
+export type PluginSettingSchema =
+  | (PluginSettingBase & { type: "string"; default?: string })
+  | (PluginSettingBase & { type: "number"; default?: number; min?: number; max?: number; step?: number })
+  | (PluginSettingBase & { type: "boolean"; default?: boolean })
+  | (PluginSettingBase & { type: "enum"; values: string[]; default?: string });
+
+export interface PluginActionInfo {
+  description?: string;
+}
+
+export type PluginSettingValue = string | number | boolean;
+export interface PluginSecretState {
+  configured: boolean;
+  redacted: true;
+}
+
+export interface PluginConfigResponse {
+  source: string;
+  scope: PluginScope;
+  schema: Record<string, PluginSettingSchema>;
+  settings: Record<string, PluginSettingValue | PluginSecretState>;
+  actions: Record<string, PluginActionInfo>;
+}
+
+export interface PluginConfigListResponse {
+  plugins: Array<Pick<PluginConfigResponse, "source" | "scope" | "schema" | "actions">>;
+}
+
+export interface PluginConfigValidationError {
+  key: string;
+  code: "unknown_setting" | "invalid_setting" | "not_a_secret";
+  message: string;
+}
+
+export interface PluginConfigWriteResponse {
+  valid: boolean;
+  errors: PluginConfigValidationError[];
+  config?: PluginConfigResponse;
+}
+
+export interface PluginActionResponse {
+  actionId: string;
+  result: unknown;
+  completedAt: string;
+}
+
 export interface PluginResourceCounts {
   extensions: number;
   skills: number;
@@ -82,6 +134,8 @@ export interface PluginPackageInfo {
   packageName?: string;
   version?: string;
   configuredVersion?: string;
+  settings?: Record<string, PluginSettingSchema>;
+  actions?: Record<string, PluginActionInfo>;
   counts: PluginResourceCounts;
   resources: PluginResourceInfo[];
   status: "loaded" | "installed" | "missing" | "disabled";
